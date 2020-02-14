@@ -1,47 +1,51 @@
 /*
  * debayer.hpp
  *
- *  Created on: Feb 11, 2020
+ *  Created on: Feb 14, 2020
  *      Author: daniel
  */
 
-#ifndef DEBAYER_HPP_
-#define DEBAYER_HPP_
+#ifndef SOURCE_IMAGE_DEBAYER_HPP_
+#define SOURCE_IMAGE_DEBAYER_HPP_
+
+#include <stdint.h>
+#include <stddef.h>
 
 #include "image.hpp"
-#include <cassert>
 
 #define DEFAULT_NUMBER_OF_THREADS           (64)
 
-namespace brt {
-namespace jupiter {
+namespace brt
+{
+namespace jupiter
+{
 
-
-class Debayer_Impl;
+class Debayer_impl;
 /*
- * \\class CudaImage
+ * \\class Debayer
  *
- * created on: Feb 11, 2020
+ * created on: Feb 14, 2020
  *
  */
-class Debayer
+class Debayer : public image::ImageConsumer
+              , public image::ImageProducer
 {
 public:
   Debayer();
   virtual ~Debayer();
 
-          bool                    init(size_t width,size_t height,image::PixelType,size_t small_hits_size);
-  	  	  image::RawRGBPtr        debayer(image::RawRGBPtr);
-  	  	  bool                    get_histogram(image::HistPtr& histogram);
+          bool                    init(size_t width,size_t height,size_t small_hits_size);
+          image::RawRGBPtr        ahd(image::RawRGBPtr img);
+
+  virtual void                    consume(image::ImageBox box);
+
 private:
-  Debayer_Impl*                   _impl;
+  Debayer_impl*                   _impl;
+  size_t                          _width;
+  size_t                          _height;
 };
 
-} // jupiter
-} // brt
+} /* namespace jupiter */
+} /* namespace brt */
 
-
-
-
-
-#endif /* DEBAYER_HPP_ */
+#endif /* SOURCE_IMAGE_DEBAYER_HPP_ */

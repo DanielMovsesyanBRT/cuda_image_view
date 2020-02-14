@@ -1,133 +1,64 @@
-/**
+/*
+ * debayer.cu
  *
- *
- *
+ *  Created on: Feb 14, 2020
+ *      Author: daniel
  */
+
 #include "debayer.hpp"
-#include "image_processor.hpp"
+#include "cuda_2d_mem.hpp"
 
-namespace brt {
-namespace jupiter {
-
-
-__constant__ size_t color_map[image::eNumTypes][image::NumColors] =
+namespace brt
 {
-  //            Blue = 0, Green = 1, Red = 2,  Alpha = 3, Bayer = 4
-  /*eNone = 0*/  {  0,       0,          0,        0,          0     },
-  /*eBayer = 1*/ {  0,       0,          0,        0,          0     },
-  /*eRGB = 2*/   {  0,       1,          2,        0,          0     },
-  /*eBGR = 3*/   {  2,       1,          0,        0,          0     },
-  /*eRGBA= 4*/   {  0,       1,          2,        3,          0     },
-  /*eBGRA= 5*/   {  2,       1,          0,        3,          0     },
-};
-
-size_t type_size[image::eNumTypes] =
+namespace jupiter
 {
-  /*eNone = 0*/  1,
-  /*eBayer = 1*/ 1,
-  /*eRGB = 2*/   3,
-  /*eBGR = 3*/   3,
-  /*eRGBA= 4*/   4,
-  /*eBGRA= 5*/   4,
-};
 
 __constant__ double             _Xn = (0.950456);
 __constant__ double             _Zn = (1.088754);
 
-
-class MemPtr
+/*
+ * \\class name
+ *
+ * created on: Feb 14, 2020
+ *
+ */
+struct RGBA
 {
-public:
-  __device__ MemPtr(cudaPitchedPtr mem,int element_size,int xoffset = 2,int yoffset = 2)
-  : _mem(mem), _el_size(element_size), _xo(xoffset), _yo(yoffset)
-  {   }
-
-protected:
-  __device__ uint8_t* ptr(int x,int y)
-  {
-    return ((uint8_t*)_mem.ptr) + ((x + _xo) * _el_size + (y + _yo) * _mem.pitch);
-  }
-
-private:
-  cudaPitchedPtr                  _mem;
-  int                             _el_size;
-  int                             _xo,_yo;
+  uint16_t                        _r;
+  uint16_t                        _g;
+  uint16_t                        _b;
+  uint16_t                        _a;
 };
 
 
 /*
- * \\class Bayer
+ * \\struct LAB
  *
- * created on: Feb 12, 2020, 3:08:28 PM
- * author daniel
- *
- */
-class Bayer : public MemPtr
-{
-public:
-  __device__ Bayer(cudaPitchedPtr mem,int xoffset = 2,int yoffset = 2)
-  : MemPtr(mem,sizeof(uint16_t), xoffset, yoffset) { }
-
-  __device__ uint16_t& operator()(int x,int y)
-  {
-    return *(uint16_t*)ptr(x,y);
-  }
-};
-
-
-/*
- * \\class Pix
- *
- * created on: Feb 12, 2020, 3:08:36 PM
- * author daniel
+ * created on: Feb 14, 2020
  *
  */
-class Pix : public MemPtr
+struct LAB
 {
-public:
-  __device__ Pix(cudaPitchedPtr mem,image::PixelType type,int typesize,int xoffset = 2,int yoffset = 2)
-  : MemPtr(mem,typesize * sizeof(uint16_t), xoffset, yoffset)
-  , _type(type)
-  { }
+  double                          _L;
+  double                          _a;
+  double                          _b;
 
-  __device__ uint16_t& operator()(int x,int y,image::Color cl)
-  {
-    return *(uint16_t*)(ptr(x,y) + color_map[_type][cl] * sizeof(uint16_t));
-  }
-
-private:
-  image::PixelType                _type;
-};
-
-
-/*
- * \\class LAB
- *
- * created on: Feb 12, 2020, 3:10:01 PM
- * author daniel
- *
- */
-class LAB
-{
-public:
-  __device__ LAB() : _L(0.0),_a(0.0),_b(0.0) {}
-
-  __device__ void   fromRGB(uint16_t r,uint16_t g,uint16_t b)
+  __device__ void                 from(RGBA& rgba)
   {
     double X,Y,Z;
 
     // Matrix multiplication
-    X = (0.412453 * static_cast<double>(r)  +
-         0.357580 * static_cast<double>(g)  +
-         0.180423 * static_cast<double>(b)) / _Xn;
+    X = (0.412453 * static_cast<double>(rgba._r)  +
+         0.357580 * static_cast<double>(rgba._g)  +
+         0.180423 * static_cast<double>(rgba._b)) / _Xn;
 
-    Y = (0.212671 * static_cast<double>(r) +
-         0.715160 * static_cast<double>(g) +
-         0.072169 * static_cast<double>(b));
+    Y = (0.212671 * static_cast<double>(rgba._r) +
+         0.715160 * static_cast<double>(rgba._g) +
+         0.072169 * static_cast<double>(rgba._b));
 
-    Z = (0.019334 * static_cast<double>(r) +
-         0.119193 * static_cast<double>(g) +
-         0.950227 * static_cast<double>(b)) / _Zn;
+    Z = (0.019334 * static_cast<double>(rgba._r) +
+         0.119193 * static_cast<double>(rgba._g) +
+         0.950227 * static_cast<double>(rgba._b)) / _Zn;
 
     auto adjust = [](double value)->double
     {
@@ -138,38 +69,40 @@ public:
     _a = 500.0 * (adjust(X) - adjust(Y));
     _b = 200.0 * (adjust(Y) - adjust(Z));
   }
-
-  __device__ double               L() const { return _L; }
-  __device__ double               a() const { return _a; }
-  __device__ double               b() const { return _b; }
-
-private:
-  double                          _L;
-  double                          _a;
-  double                          _b;
 };
-
 
 /*
- * \\class Lab
+ * \\class Debayer_impl
  *
- * created on: Feb 12, 2020, 3:17:40 PM
- * author daniel
+ * created on: Feb 14, 2020
  *
  */
-class Lab : public MemPtr
+class Debayer_impl
 {
+friend Debayer;
 public:
-  __device__ Lab(cudaPitchedPtr mem,int xoffset = 2,int yoffset = 2)
-  : MemPtr(mem,sizeof(LAB), xoffset, yoffset)
+  Debayer_impl()
+  : _thx(0),_thy(0)
+  , _blkx(0),_blky(0)
   { }
 
-  __device__ LAB& operator()(int x,int y)
-  {
-    return *(LAB*) ptr(x,y);
-  }
-};
+  virtual ~Debayer_impl() {}
 
+          void                    init(size_t width,size_t height);
+          image::RawRGBPtr        ahd(image::RawRGBPtr img);
+private:
+
+  Cuda2DPtr<uint16_t>             _raw;
+  Cuda2DPtr<RGBA>                 _horiz;
+  Cuda2DPtr<RGBA>                 _vert;
+  Cuda2DPtr<RGBA>                 _result;
+
+  Cuda2DPtr<LAB>                  _hlab;
+  Cuda2DPtr<LAB>                  _vlab;
+
+  int                             _thx,_thy;
+  int                             _blkx,_blky;
+};
 
 /*
  * \\fn void green_interpolate
@@ -178,17 +111,13 @@ public:
  * author daniel
  *
  */
-__global__ void green_interpolate(image::PixelType type, int typesize,
-                                  cudaPitchedPtr raw_image,
-                                  cudaPitchedPtr horiz_image,
-                                  cudaPitchedPtr vertical_image)
+__global__ void green_interpolate(Cuda2DPtr<uint16_t> raw,
+                                  Cuda2DPtr<RGBA> hr,
+                                  Cuda2DPtr<RGBA> vr)
 {
   int origx = ((blockIdx.x * blockDim.x) + threadIdx.x) << 1;
   int origy = ((blockIdx.y * blockDim.y) + threadIdx.y) << 1;
 
-  Bayer raw(raw_image);
-  Pix hr(horiz_image,type,typesize);
-  Pix vr(vertical_image,type,typesize);
 
   auto limit = [](int x,int a,int b)->int
   {
@@ -200,8 +129,8 @@ __global__ void green_interpolate(image::PixelType type, int typesize,
   // B C
   // (0,0) -> Clear
   int x = origx, y = origy;
-  vr(x,y,image::Green) = hr(x,y,image::Green) = raw(x,y);
-  vr(x,y,image::Alpha) = hr(x,y,image::Alpha) = (uint16_t)-1;
+  vr(x,y)._g = hr(x,y)._g = raw(x,y);
+  vr(x,y)._a = hr(x,y)._a = (uint16_t)-1;
 
   ////////////////////////////////////////////////
   // (1,0) -> Red
@@ -209,12 +138,12 @@ __global__ void green_interpolate(image::PixelType type, int typesize,
   y = origy;
 
   int value = (((raw(x-1,y) + raw(x,y) + raw(x+1,y)) * 2) - raw(x - 2,y) - raw(x + 2,y)) >> 2;
-  hr(x,y,image::Green) = limit(value,raw(x - 1,y),raw(x + 1,y));
+  hr(x,y)._g = limit(value,raw(x - 1,y),raw(x + 1,y));
 
   value = (((raw(x,y-1) + raw(x,y) + raw(x,y+1)) * 2) - raw(x,y-2) - raw(x,y+2)) >> 2;
-  vr(x,y,image::Green) = limit(value,raw(x,y-1),raw(x,y+1));
+  vr(x,y)._g = limit(value,raw(x,y-1),raw(x,y+1));
 
-  vr(x,y,image::Alpha) = hr(x,y,image::Alpha) = (uint16_t)-1;
+  vr(x,y)._a = hr(x,y)._a = (uint16_t)-1;
 
   ////////////////////////////////////////////////
   // (0,1) -> Blue
@@ -222,22 +151,21 @@ __global__ void green_interpolate(image::PixelType type, int typesize,
   y = origy + 1;
 
   value = (((raw(x-1,y) + raw(x,y) + raw(x+1,y)) * 2) - raw(x - 2,y) - raw(x + 2,y)) >> 2;
-  hr(x,y,image::Green) = limit(value,raw(x - 1,y),raw(x + 1,y));
+  hr(x,y)._g = limit(value,raw(x - 1,y),raw(x + 1,y));
 
   value = (((raw(x,y-1) + raw(x,y) + raw(x,y+1)) * 2) - raw(x,y-2) - raw(x,y+2)) >> 2;
-  vr(x,y,image::Green) = limit(value,raw(x,y-1),raw(x,y+1));
+  vr(x,y)._g = limit(value,raw(x,y-1),raw(x,y+1));
 
-  vr(x,y,image::Alpha) = hr(x,y,image::Alpha) = (uint16_t)-1;
+  vr(x,y)._a = hr(x,y)._a = (uint16_t)-1;
 
   ////////////////////////////////////////////////
   // (1,1) -> Clear
   x = origx + 1;
   y = origy + 1;
 
-  vr(x,y,image::Green) = hr(x,y,image::Green) = raw(x,y);
-  vr(x,y,image::Alpha) = hr(x,y,image::Alpha) = (uint16_t)-1;
+  vr(x,y)._g = hr(x,y)._g = raw(x,y);
+  vr(x,y)._a = hr(x,y)._a = (uint16_t)-1;
 }
-
 
 /*
  * \\fn void blue_red_interpolate
@@ -246,23 +174,14 @@ __global__ void green_interpolate(image::PixelType type, int typesize,
  * author daniel
  *
  */
-__global__ void blue_red_interpolate(image::PixelType type, int typesize,
-                                      cudaPitchedPtr raw_image,
-                                      cudaPitchedPtr horiz_image,
-                                      cudaPitchedPtr vertical_image,
-                                      cudaPitchedPtr hlab,
-                                      cudaPitchedPtr vlab)
+__global__ void blue_red_interpolate( Cuda2DPtr<uint16_t> raw,
+                                      Cuda2DPtr<RGBA> hr,
+                                      Cuda2DPtr<RGBA> vr,
+                                      Cuda2DPtr<LAB> hl,
+                                      Cuda2DPtr<LAB> vl)
 {
   int origx = ((blockIdx.x * blockDim.x) + threadIdx.x) << 1;
   int origy = ((blockIdx.y * blockDim.y) + threadIdx.y) << 1;
-
-  Bayer raw(raw_image);
-  Pix hr(horiz_image,type,typesize);
-  Pix vr(vertical_image,type,typesize);
-
-  Lab hl(hlab);
-  Lab vl(vlab);
-
 
   auto limit = [](int x,int a,int b)->int
   {
@@ -278,62 +197,62 @@ __global__ void blue_red_interpolate(image::PixelType type, int typesize,
   int x = origx, y = origy;
 
   // Horizontal
-  int value = hr(x,y,image::Green) + ((raw(x-1,y) - hr(x-1,y,image::Green) + raw(x+1,y) - hr(x+1,y,image::Green)) >> 1);
-  hr(x,y,image::Red) = limit(value, 0, ((1 << 16) - 1));
+  int value = hr(x,y)._g + ((raw(x-1,y) - hr(x-1,y)._g + raw(x+1,y) - hr(x+1,y)._g) >> 1);
+  hr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
 
-  value = hr(x,y,image::Green) + ((raw(x,y-1) - hr(x,y-1,image::Green) + raw(x,y+1) - hr(x,y+1,image::Green)) >> 1);
-  hr(x,y,image::Blue) = limit(value, 0, ((1 << 16) - 1));
-  hl(x,y).fromRGB(hr(x,y,image::Red),hr(x,y,image::Green),hr(x,y,image::Blue));
+  value = hr(x,y)._g  + ((raw(x,y-1) - hr(x,y-1)._g + raw(x,y+1) - hr(x,y+1)._g) >> 1);
+  hr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
+  hl(x,y).from(hr(x,y));
 
   // Vertical
-  value = vr(x,y,image::Green) + ((raw(x-1,y) - vr(x-1,y,image::Green) + raw(x+1,y) - vr(x+1,y,image::Green)) >> 1);
-  vr(x,y,image::Red) = limit(value, 0, ((1 << 16) - 1));
+  value = vr(x,y)._g + ((raw(x-1,y) - vr(x-1,y)._g + raw(x+1,y) - vr(x+1,y)._g) >> 1);
+  vr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
 
-  value = vr(x,y,image::Green) + ((raw(x,y-1) - vr(x,y-1,image::Green) + raw(x,y+1) - vr(x,y+1,image::Green)) >> 1);
-  vr(x,y,image::Blue) = limit(value, 0, ((1 << 16) - 1));
-  vl(x,y).fromRGB(vr(x,y,image::Red),vr(x,y,image::Green),vr(x,y,image::Blue));
+  value = vr(x,y)._g + ((raw(x,y-1) - vr(x,y-1)._g + raw(x,y+1) - vr(x,y+1)._g) >> 1);
+  vr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
+  vl(x,y).from(vr(x,y));
 
   ////////////////////////////////////////////////
   // (1,0) -> Red
   x = origx + 1;
   y = origy;
 
-  hr(x,y,image::Red) = vr(x,y,image::Red) = raw(x,y);
+  hr(x,y)._r = vr(x,y)._r = raw(x,y);
 
-  value = hr(x,y,image::Green) + ((raw(x-1,y-1) - hr(x-1,y-1,image::Green) +
-                                   raw(x-1,y+1) - hr(x-1,y+1,image::Green) +
-                                   raw(x+1,y-1) - hr(x+1,y-1,image::Green) +
-                                   raw(x+1,y+1) - hr(x+1,y+1,image::Green)) >> 2);
-  hr(x,y,image::Blue) = limit(value, 0, ((1 << 16) - 1));
-  hl(x,y).fromRGB(hr(x,y,image::Red),hr(x,y,image::Green),hr(x,y,image::Blue));
+  value = hr(x,y)._g + ((raw(x-1,y-1) - hr(x-1,y-1)._g +
+                         raw(x-1,y+1) - hr(x-1,y+1)._g +
+                         raw(x+1,y-1) - hr(x+1,y-1)._g +
+                         raw(x+1,y+1) - hr(x+1,y+1)._g) >> 2);
+  hr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
+  hl(x,y).from(hr(x,y));
 
-  value = vr(x,y,image::Green) + ((raw(x-1,y-1) - vr(x-1,y-1,image::Green) +
-                                   raw(x-1,y+1) - vr(x-1,y+1,image::Green) +
-                                   raw(x+1,y-1) - vr(x+1,y-1,image::Green) +
-                                   raw(x+1,y+1) - vr(x+1,y+1,image::Green)) >> 2);
-  vr(x,y,image::Blue) = limit(value, 0, ((1 << 16) - 1));
-  vl(x,y).fromRGB(vr(x,y,image::Red),vr(x,y,image::Green),vr(x,y,image::Blue));
+  value = vr(x,y)._g + ((raw(x-1,y-1) - vr(x-1,y-1)._g +
+                         raw(x-1,y+1) - vr(x-1,y+1)._g +
+                         raw(x+1,y-1) - vr(x+1,y-1)._g +
+                         raw(x+1,y+1) - vr(x+1,y+1)._g) >> 2);
+  vr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
+  vl(x,y).from(vr(x,y));
 
   ////////////////////////////////////////////////
   // (0,1) -> Blue
   x = origx;
   y = origy + 1;
 
-  hr(x,y,image::Blue) = vr(x,y,image::Blue) = raw(x,y);
+  hr(x,y)._b = vr(x,y)._b = raw(x,y);
 
-  value = hr(x,y,image::Green) + ((raw(x-1,y-1) - hr(x-1,y-1,image::Green) +
-                                   raw(x-1,y+1) - hr(x-1,y+1,image::Green) +
-                                   raw(x+1,y-1) - hr(x+1,y-1,image::Green) +
-                                   raw(x+1,y+1) - hr(x+1,y+1,image::Green)) >> 2);
-  hr(x,y,image::Red) = limit(value, 0, ((1 << 16) - 1));
-  hl(x,y).fromRGB(hr(x,y,image::Red),hr(x,y,image::Green),hr(x,y,image::Blue));
+  value = hr(x,y)._g + ((raw(x-1,y-1) - hr(x-1,y-1)._g +
+                         raw(x-1,y+1) - hr(x-1,y+1)._g +
+                         raw(x+1,y-1) - hr(x+1,y-1)._g +
+                         raw(x+1,y+1) - hr(x+1,y+1)._g) >> 2);
+  hr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
+  hl(x,y).from(hr(x,y));
 
-  value = vr(x,y,image::Green) + ((raw(x-1,y-1) - vr(x-1,y-1,image::Green) +
-                                   raw(x-1,y+1) - vr(x-1,y+1,image::Green) +
-                                   raw(x+1,y-1) - vr(x+1,y-1,image::Green) +
-                                   raw(x+1,y+1) - vr(x+1,y+1,image::Green)) >> 2);
-  vr(x,y,image::Red) = limit(value, 0, ((1 << 16) - 1));
-  vl(x,y).fromRGB(vr(x,y,image::Red),vr(x,y,image::Green),vr(x,y,image::Blue));
+  value = vr(x,y)._g + ((raw(x-1,y-1) - vr(x-1,y-1)._g +
+                         raw(x-1,y+1) - vr(x-1,y+1)._g +
+                         raw(x+1,y-1) - vr(x+1,y-1)._g +
+                         raw(x+1,y+1) - vr(x+1,y+1)._g) >> 2);
+  vr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
+  vl(x,y).from(vr(x,y));
 
   ////////////////////////////////////////////////
   // (1,1) -> ClearBlue
@@ -341,21 +260,22 @@ __global__ void blue_red_interpolate(image::PixelType type, int typesize,
   y = origy + 1;
 
   // Horizontal
-  value = hr(x,y,image::Green) + ((raw(x-1,y) - hr(x-1,y,image::Green) + raw(x+1,y) - hr(x+1,y,image::Green)) >> 1);
-  hr(x,y,image::Blue) = limit(value, 0, ((1 << 16) - 1));
+  value = hr(x,y)._g + ((raw(x-1,y) - hr(x-1,y)._g + raw(x+1,y) - hr(x+1,y)._g) >> 1);
+  hr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
 
-  value = hr(x,y,image::Green) + ((raw(x,y-1) - hr(x,y-1,image::Green) + raw(x,y+1) - hr(x,y+1,image::Green)) >> 1);
-  hr(x,y,image::Red) = limit(value, 0, ((1 << 16) - 1));
-  hl(x,y).fromRGB(hr(x,y,image::Red),hr(x,y,image::Green),hr(x,y,image::Blue));
+  value = hr(x,y)._g + ((raw(x,y-1) - hr(x,y-1)._g + raw(x,y+1) - hr(x,y+1)._g) >> 1);
+  hr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
+  hl(x,y).from(hr(x,y));
 
   // Vertical
-  value = vr(x,y,image::Green) + ((raw(x-1,y) - vr(x-1,y,image::Green) + raw(x+1,y) - vr(x+1,y,image::Green)) >> 1);
-  vr(x,y,image::Blue) = limit(value, 0, ((1 << 16) - 1));
+  value = vr(x,y)._g + ((raw(x-1,y) - vr(x-1,y)._g + raw(x+1,y) - vr(x+1,y)._g) >> 1);
+  vr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
 
-  value = vr(x,y,image::Green) + ((raw(x,y-1) - vr(x,y-1,image::Green) + raw(x,y+1) - vr(x,y+1,image::Green)) >> 1);
-  vr(x,y,image::Red) = limit(value, 0, ((1 << 16) - 1));
-  vl(x,y).fromRGB(vr(x,y,image::Red),vr(x,y,image::Green),vr(x,y,image::Blue));
+  value = vr(x,y)._g + ((raw(x,y-1) - vr(x,y-1)._g + raw(x,y+1) - vr(x,y+1)._g) >> 1);
+  vr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
+  vl(x,y).from(vr(x,y));
 }
+
 
 /*
  * \\fn void misguidance_color_artifacts
@@ -364,50 +284,40 @@ __global__ void blue_red_interpolate(image::PixelType type, int typesize,
  * author daniel
  *
  */
-__global__ void misguidance_color_artifacts(image::PixelType type, int typesize,
-                                            cudaPitchedPtr result_image,
-                                            cudaPitchedPtr horiz_image,
-                                            cudaPitchedPtr vertical_image,
-                                            cudaPitchedPtr hlab,
-                                            cudaPitchedPtr vlab,
-                                            uint32_t* histogram,uint32_t histogram_size,
-                                            uint32_t* small_histogram,uint32_t small_histogram_size)
+__global__ void misguidance_color_artifacts(Cuda2DPtr<RGBA> rst,
+                                            Cuda2DPtr<RGBA> hr,
+                                            Cuda2DPtr<RGBA> vr,
+                                            Cuda2DPtr<LAB> hl,
+                                            Cuda2DPtr<LAB> vl)
 {
-  int hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(histogram_size));
-  int small_hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(small_histogram_size));
+//  int hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(histogram_size));
+//  int small_hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(small_histogram_size));
 
   int x = ((blockIdx.x * blockDim.x) + threadIdx.x);
   int y = ((blockIdx.y * blockDim.y) + threadIdx.y);
-
-  Pix rst(result_image,type,typesize,0,0);
-  Pix hr(horiz_image,type,typesize);
-  Pix vr(vertical_image,type,typesize);
-
-  Lab hl(hlab);
-  Lab vl(vlab);
 
   auto sqr=[](double a)->double { return a*a; };
 
   double lv[2],lh[2],cv[2],ch[2];
   int hh = 0,hv = 0;
 
-  lh[0] = fabs(hl(x,y).L() - hl(x-1,y).L());
-  lh[1] = fabs(hl(x,y).L() - hl(x+1,y).L());
+  lh[0] = fabs(hl(x,y)._L - hl(x-1,y)._L);
+  lh[1] = fabs(hl(x,y)._L - hl(x+1,y)._L);
 
-  lv[0] = fabs(vl(x,y).L() - vl(x,y-1).L());
-  lv[1] = fabs(vl(x,y).L() - vl(x,y+1).L());
+  lv[0] = fabs(vl(x,y)._L - vl(x,y-1)._L);
+  lv[1] = fabs(vl(x,y)._L - vl(x,y+1)._L);
 
-  ch[0] = sqr(hl(x,y).a() - hl(x-1,y).a()) +
-          sqr(hl(x,y).b() - hl(x-1,y).b());
+  ch[0] = sqr(hl(x,y)._a - hl(x-1,y)._a) +
+          sqr(hl(x,y)._b - hl(x-1,y)._b);
 
-  ch[1] = sqr(hl(x,y).a() - hl(x+1,y).a()) +
-          sqr(hl(x,y).b() - hl(x+1,y).b());
+  ch[1] = sqr(hl(x,y)._a - hl(x+1,y)._a) +
+          sqr(hl(x,y)._b - hl(x+1,y)._b);
 
-  cv[0] = sqr(vl(x,y).a() - vl(x,y-1).a()) +
-          sqr(vl(x,y).b() - vl(x,y-1).b());
+  cv[0] = sqr(vl(x,y)._a - vl(x,y-1)._a) +
+          sqr(vl(x,y)._b - vl(x,y-1)._b);
 
-  cv[1] = sqr(vl(x,y).a() - vl(x,y+1).a()) +
-          sqr(vl(x,y).b() - vl(x,y+1).b());
+  cv[1] = sqr(vl(x,y)._a - vl(x,y+1)._a) +
+          sqr(vl(x,y)._b - vl(x,y+1)._b);
 
   double eps_l = min(max(lh[0],lh[1]),max(lv[0],lv[1]));
   double eps_c = min(max(ch[0],ch[1]),max(cv[0],cv[1]));
@@ -422,409 +332,42 @@ __global__ void misguidance_color_artifacts(image::PixelType type, int typesize,
   }
 
   uint32_t r = 0,g = 0,b = 0;
-  if (hh > hv)
-  {
-    r = rst(x,y,image::Red) = hr(x,y,image::Red);
-    g = rst(x,y,image::Green) = hr(x,y,image::Green);
-    b = rst(x,y,image::Blue) = hr(x,y,image::Blue);
-    rst(x,y,image::Alpha) = hr(x,y,image::Alpha);
-  }
-  else if (hv > hh)
-  {
-    r = rst(x,y,image::Red) = vr(x,y,image::Red);
-    g = rst(x,y,image::Green) = vr(x,y,image::Green);
-    b = rst(x,y,image::Blue) = vr(x,y,image::Blue);
-    rst(x,y,image::Alpha) = vr(x,y,image::Alpha);
-  }
-  else //if (hv == hh)
-  {
-    r = rst(x,y,image::Red) = (hr(x,y,image::Red) + vr(x,y,image::Red)) >> 1;
-    g = rst(x,y,image::Green) = (hr(x,y,image::Green) + vr(x,y,image::Green)) >> 1;
-    b = rst(x,y,image::Blue) = (hr(x,y,image::Blue) + vr(x,y,image::Blue)) >> 1;
-    rst(x,y,image::Alpha) = (uint16_t)-1;
-  }
+  RGBA *lf, *rt;
 
-  uint32_t brightness = ((r+r+r+b+g+g+g+g) >> 3) * small_histogram_size >> small_hist_size_bits;
-  atomicAdd(&small_histogram[brightness & ((1 << small_hist_size_bits) - 1)], 1);
+  lf = (hh > hv)? &hr(x,y) : &vr(x,y);
+  rt = (hv > hh)? &vr(x,y) : &hr(x,y);
 
-  brightness = ((r+r+r+b+g+g+g+g) >> 3) * histogram_size >> hist_size_bits;
-  atomicAdd(&histogram[brightness & ((1 << hist_size_bits) - 1)], 1);
+  r = rst(x,y)._r = (lf->_r + rt->_r) >> 1;
+  g = rst(x,y)._g = (lf->_g + rt->_g) >> 1;
+  b = rst(x,y)._b = (lf->_b + rt->_b) >> 1;
+  rst(x,y)._a = (uint16_t)-1;
+
+//  uint32_t brightness = ((r+r+r+b+g+g+g+g) >> 3) * small_histogram_size >> small_hist_size_bits;
+//  atomicAdd(&small_histogram[brightness & ((1 << small_hist_size_bits) - 1)], 1);
+//
+//  brightness = ((r+r+r+b+g+g+g+g) >> 3) * histogram_size >> hist_size_bits;
+//  atomicAdd(&histogram[brightness & ((1 << hist_size_bits) - 1)], 1);
 }
 
-
 /*
- * \\fn void cudaMax
+ * \\fn constructor Debayer::Debayer
  *
- * created on: Nov 22, 2019
+ * created on: Feb 14, 2020
  * author: daniel
  *
  */
-__global__ void cudaMax(uint32_t *org, uint32_t *max)
-{
-  const int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  max[tid] = org[tid];
-
-  auto step_size = 1;
-  int number_of_threads = gridDim.x * blockDim.x;
-
-  __syncthreads();
-
-  while (number_of_threads > 0)
-  {
-    if (tid < number_of_threads)
-    {
-      const auto fst = tid * step_size * 2;
-      const auto snd = fst + step_size;
-
-      max[fst] = (max[fst] < max[snd]) ? max[snd] : max[fst];
-    }
-
-    step_size <<= 1;
-    number_of_threads >>= 1;
-  }
-}
-
-
-/*
- * \\class CudaImage
- *
- * created on: Feb 11, 2020
- *
- */
-class Debayer_Impl
-{
-friend Debayer;
-public:
-  Debayer_Impl();
-  virtual ~Debayer_Impl();
-
-          bool                    init(size_t width,size_t height,image::PixelType,size_t small_hits_size);
-          image::RawRGBPtr        ahd(image::RawRGBPtr);
-private:
-          void                    free();
-
-private:
-  cudaPitchedPtr                  _raw_image;
-  cudaPitchedPtr                  _horiz_image;
-  cudaPitchedPtr                  _vertical_image;
-  cudaPitchedPtr                  _result_image;
-  cudaPitchedPtr                  _hlab;
-  cudaPitchedPtr                  _vlab;
-
-  void*                           _histogram;
-  void*                           _histogram_max;
-  size_t                          _histogram_size;
-
-  void*                           _small_histogram;
-  size_t                          _small_histogram_size;
-
-  size_t                          _width;
-  size_t                          _height;
-  image::PixelType                _type;
-
-  int                             _thx,_thy;
-  int                             _blkx,_blky;
-};
-
-/*
- * \\fn Constructor Debayer_Impl::Debayer_Impl
- *
- * created on: Feb 11, 2020, 3:05:08 PM
- * author daniel
- *
- */
-Debayer_Impl::Debayer_Impl()
-: _raw_image{nullptr,0,0,0}
-, _horiz_image{nullptr,0,0,0}
-, _vertical_image{nullptr,0,0,0}
-, _result_image{nullptr,0,0,0}
-, _hlab{nullptr,0,0,0}
-, _vlab{nullptr,0,0,0}
-, _histogram(nullptr)
-, _histogram_max(nullptr)
-, _histogram_size(0)
-, _small_histogram(nullptr)
-, _small_histogram_size(0)
-, _width(0)
-, _height(0)
-, _type(image::eNone)
-, _thx(0)
-, _thy(0)
-, _blkx(0)
-, _blky(0)
-{
-}
-
-/*
- * \\fn Destructor Debayer_Impl::~Debayer_Impl
- *
- * created on: Feb 11, 2020, 3:05:58 PM
- * author daniel
- *
- */
-Debayer_Impl::~Debayer_Impl()
-{
-  free();
-}
-
-/*
- * \\fn bool Debayer_Impl::init
- *
- * created on: Feb 11, 2020, 3:41:45 PM
- * author daniel
- *
- */
-bool Debayer_Impl::init(size_t width,size_t height,image::PixelType type,size_t small_hits_size)
-{
-  if ((_width == width) && (_height == height) && (type_size[type] == type_size[_type]))
-    return true;
-
-  free();
-
-  _width = width;
-  _height = height;
-  _type = type;
-  _small_histogram_size = small_hits_size;
-
-  // Raw image with extra 2 pixels at each end....
-  cudaError_t err = cudaMalloc3D(&_raw_image, make_cudaExtent((_width + 4) * sizeof(uint16_t) * type_size[image::eBayer],_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-
-  err = cudaMemset3D(_raw_image, 0, make_cudaExtent((_width + 4) * sizeof(uint16_t) * type_size[image::eBayer],_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-  //////////////////////////
-
-  err = cudaMalloc3D(&_horiz_image, make_cudaExtent((_width + 4) * type_size[_type] * sizeof(uint16_t),_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-
-  err = cudaMemset3D(_horiz_image, 0, make_cudaExtent((_width + 4) * type_size[_type] * sizeof(uint16_t),_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-  //////////////////////////
-
-  err = cudaMalloc3D(&_vertical_image, make_cudaExtent((_width + 4) * type_size[_type] * sizeof(uint16_t),_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-
-  err = cudaMemset3D(_vertical_image, 0, make_cudaExtent((_width + 4) * type_size[_type] * sizeof(uint16_t),_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-  //////////////////////////
-
-  err = cudaMalloc3D(&_result_image, make_cudaExtent(_width * type_size[_type] * sizeof(uint16_t),_height, 1));
-  if (err != cudaSuccess)
-    return false;
-
-  err = cudaMemset3D(_result_image, 0, make_cudaExtent(_width * type_size[_type] * sizeof(uint16_t),_height, 1));
-  if (err != cudaSuccess)
-    return false;
-  //////////////////////////
-
-  err = cudaMalloc3D(&_hlab, make_cudaExtent((_width + 4) * sizeof(double) * 3,_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-
-  err = cudaMemset3D(_hlab, 0, make_cudaExtent((_width + 4) * sizeof(double) * 3,_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-  //////////////////////////
-
-  err = cudaMalloc3D(&_vlab, make_cudaExtent((_width + 4) * sizeof(double) * 3,_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-
-  err = cudaMemset3D(_vlab, 0, make_cudaExtent((_width + 4) * sizeof(double) * 3,_height + 4, 1));
-  if (err != cudaSuccess)
-    return false;
-  //////////////////////////
-
-  _histogram_size = (1 << 16);
-  err = cudaMalloc(&_histogram,_histogram_size * sizeof(uint32_t));
-  if (err != cudaSuccess)
-    return false;
-
-  err = cudaMalloc(&_histogram_max,_histogram_size * sizeof(uint32_t));
-  if (err != cudaSuccess)
-    return false;
-
-
-  err = cudaMalloc(&_small_histogram,_small_histogram_size * sizeof(uint32_t));
-  if (err != cudaSuccess)
-    return false;
-
-
-  _thx = std::min(DEFAULT_NUMBER_OF_THREADS, (1 << __builtin_ctz(_width)));
-  if (_thx == 0)
-    _thx = 1;
-
-  _thy = std::min(DEFAULT_NUMBER_OF_THREADS, (1 << __builtin_ctz(_height)));
-  if (_thy == 0)
-    _thy = 1;
-
-  _blkx = _width / _thx;
-  if ((_width % _thx) != 0)
-    _blkx++;
-
-  _blky = _height / _thy;
-  if ((_height % _thy) != 0)
-    _blky++;
-
-  return true;
-}
-
-/*
- * \\fn void Debayer_Impl::free
- *
- * created on: Feb 11, 2020, 3:54:09 PM
- * author daniel
- *
- */
-void Debayer_Impl::free()
-{
-  if (_raw_image.pitch != 0)
-    cudaFree(_raw_image.ptr);
-
-  if (_horiz_image.pitch != 0)
-    cudaFree(_horiz_image.ptr);
-
-  if (_vertical_image.pitch != 0)
-    cudaFree(_vertical_image.ptr);
-
-  if (_result_image.pitch != 0)
-    cudaFree(_result_image.ptr);
-
-  if (_hlab.pitch != 0)
-    cudaFree(_hlab.ptr);
-
-  if (_vlab.pitch != 0)
-    cudaFree(_vlab.ptr);
-
-  cudaFree(_histogram);
-  cudaFree(_histogram_max);
-  cudaFree(_small_histogram);
-}
-
-
-/*
- * \\fn image::RawRGBPtr Debayer_Impl::ahd
- *
- * created on: Feb 11, 2020, 3:14:04 PM
- * author daniel
- *
- */
-image::RawRGBPtr Debayer_Impl::ahd(image::RawRGBPtr img)
-{
-  if (!img)
-    return image::RawRGBPtr();
-
-  cudaMemcpy3DParms mcp = {0};
-  mcp.srcPtr.ptr  = img->bytes();
-  mcp.srcPtr.pitch = img->width() * sizeof(uint16_t);
-  mcp.srcPtr.xsize = img->width() * sizeof(uint16_t);
-  mcp.srcPtr.ysize = img->height();
-
-  mcp.dstPtr.ptr = _raw_image.ptr;
-  mcp.dstPtr.pitch = _raw_image.pitch;
-  mcp.dstPtr.xsize = _raw_image.xsize;
-  mcp.dstPtr.ysize = _raw_image.ysize;
-
-  mcp.dstPos.x     = 2 * sizeof(uint16_t);
-  mcp.dstPos.y     = 2;
-  mcp.dstPos.z     = 0;
-
-  mcp.extent.width  = img->width()* sizeof(uint16_t);
-  mcp.extent.height = img->height();
-  mcp.extent.depth  = 1;
-
-  mcp.kind = cudaMemcpyHostToDevice;
-  assert(cudaMemcpy3D(&mcp) == cudaSuccess);
-
-  //
-  dim3 threads(_thx >> 1,_thy >> 1);
-  dim3 blocks(_blkx, _blky);
-
-  green_interpolate<<<blocks,threads>>>(_type, type_size[_type],
-                                        _raw_image,
-                                        _horiz_image,
-                                        _vertical_image);
-  cudaDeviceSynchronize();
-
-  blue_red_interpolate<<<blocks,threads>>>(_type, type_size[_type],
-                                        _raw_image,
-                                        _horiz_image,
-                                        _vertical_image,
-                                        _hlab,
-                                        _vlab);
-  cudaDeviceSynchronize();
-
-  dim3 threads2(_thx,_thy);
-
-  cudaMemset(_histogram,0,_histogram_size * sizeof(uint32_t));
-  cudaMemset(_small_histogram,0,_small_histogram_size * sizeof(uint32_t));
-
-  misguidance_color_artifacts<<<blocks,threads2>>>(_type, type_size[_type],
-                                        _result_image,
-                                        _horiz_image,
-                                        _vertical_image,
-                                        _hlab,
-                                        _vlab,
-                                        (uint32_t*)_histogram, _histogram_size,
-                                        (uint32_t*)_small_histogram,_small_histogram_size);
-  cudaDeviceSynchronize();
-
-
-  int thx = 64;
-  while (_histogram_size < thx)
-    thx >>= 1;
-
-//  assert(cudaMemcpy(_histogram_max, _histogram, _histogram_size * sizeof(uint32_t),cudaMemcpyDeviceToDevice) == cudaSuccess);
-  cudaMax<<<_histogram_size / thx, thx>>>((uint32_t*)_histogram, (uint32_t*)_histogram_max);
-
-  image::RawRGBPtr result(new image::RawRGB(img->width(), img->height(), img->depth(), _type));
-  memset(&mcp,0,sizeof(mcp));
-
-  mcp.dstPtr.ptr  = result->bytes();
-  mcp.dstPtr.pitch = result->width() * type_size[_type] * sizeof(uint16_t);
-  mcp.dstPtr.xsize = result->width() * type_size[_type] * sizeof(uint16_t);
-  mcp.dstPtr.ysize = result->height();
-
-  mcp.srcPtr.ptr = _result_image.ptr;
-  mcp.srcPtr.pitch = _result_image.pitch;
-  mcp.srcPtr.xsize = _result_image.xsize;
-  mcp.srcPtr.ysize = _result_image.ysize;
-
-  mcp.extent.width  = result->width() * type_size[_type] * sizeof(uint16_t);
-  mcp.extent.height = result->height();
-  mcp.extent.depth  = 1;
-
-  mcp.kind = cudaMemcpyDeviceToHost;
-
-  assert(cudaMemcpy3D(&mcp) == cudaSuccess);
-  return result;
-}
-
-
-/*
- * \\fn Constructor Debayer::Debayer
- *
- * created on: Feb 12, 2020, 4:25:18 PM
- * author daniel
- *
- */
 Debayer::Debayer()
-: _impl(new Debayer_Impl())
+: _width(0)
+, _height(0)
 {
-
+  _impl = new Debayer_impl();
 }
 
 /*
- * \\fn Destructor Debayer::~Debayer
+ * \\fn Debayer::~Debayer
  *
- * created on: Feb 12, 2020, 4:26:01 PM
- * author daniel
+ * created on: Feb 14, 2020
+ * author: daniel
  *
  */
 Debayer::~Debayer()
@@ -832,59 +375,115 @@ Debayer::~Debayer()
   delete _impl;
 }
 
+
 /*
- * \\fn bool Debayer::init
+ * \\fn Debayer_impl::init
  *
- * created on: Feb 12, 2020, 4:26:33 PM
- * author daniel
+ * created on: Feb 14, 2020
+ * author: daniel
  *
  */
-bool Debayer::init(size_t width,size_t height,image::PixelType type,size_t small_hits_size)
+void Debayer_impl::init(size_t width,size_t height)
 {
-  return _impl->init(width,height,type,small_hits_size);
+  _raw = Cuda2DPtr<uint16_t>(width,height,2,2);  _raw.fill(0);
+
+  _horiz = Cuda2DPtr<RGBA>(width,height,2,2); _horiz.fill(0);
+  _vert = Cuda2DPtr<RGBA>(width,height,2,2); _vert.fill(0);
+  _result = Cuda2DPtr<RGBA>(width,height); _result.fill(0);
+
+  _hlab = Cuda2DPtr<LAB>(width,height,2,2); _hlab.fill(0);
+  _vlab = Cuda2DPtr<LAB>(width,height,2,2); _vlab.fill(0);
+
+  _thx = std::min(DEFAULT_NUMBER_OF_THREADS, (1 << __builtin_ctz(width)));
+  if (_thx == 0)
+    _thx = 1;
+
+  _thy = std::min(DEFAULT_NUMBER_OF_THREADS, (1 << __builtin_ctz(height)));
+  if (_thy == 0)
+    _thy = 1;
+
+  _blkx = width / _thx;
+  if ((width % _thx) != 0)
+    _blkx++;
+
+  _blky = height / _thy;
+  if ((height % _thy) != 0)
+    _blky++;
+}
+/*
+ * \\fn Debayer::init
+ *
+ * created on: Feb 14, 2020
+ * author: daniel
+ *
+ */
+bool Debayer::init(size_t width,size_t height,size_t small_hits_size)
+{
+  if ((_width == width) && (_height == height))
+    return true;
+
+  _impl->init(width, height);
+  return true;
 }
 
 /*
- * \\fn image::RawRGBPtr Debayer::debayer
+ * \\fn image::RawRGBPtr Debayer::ahd
  *
- * created on: Feb 12, 2020, 4:27:24 PM
- * author daniel
+ * created on: Feb 14, 2020
+ * author: daniel
  *
  */
-image::RawRGBPtr Debayer::debayer(image::RawRGBPtr img)
+image::RawRGBPtr Debayer_impl::ahd(image::RawRGBPtr img)
 {
   if (!img)
     return image::RawRGBPtr();
 
+  _raw.put((uint16_t*)img->bytes());
+
+  dim3 threads(_thx >> 1,_thy >> 1);
+  dim3 blocks(_blkx, _blky);
+
+  green_interpolate<<<blocks,threads>>>(_raw, _horiz, _vert);
+  blue_red_interpolate<<<blocks,threads>>>(_raw, _horiz, _vert, _hlab, _vlab);
+
+  dim3 threads2(_thx,_thy);
+  misguidance_color_artifacts<<<blocks,threads2>>>(_result, _horiz, _vert, _hlab, _vlab);
+
+  image::RawRGBPtr result(new image::RawRGB(img->width(), img->height(), img->depth(), image::eRGBA));
+  _result.get((RGBA*)result->bytes());
+
+  return result;
+}
+
+/*
+ * \\fn image::RawRGBPtr Debayer::ahd
+ *
+ * created on: Feb 14, 2020
+ * author: daniel
+ *
+ */
+image::RawRGBPtr Debayer::ahd(image::RawRGBPtr img)
+{
   return _impl->ahd(img);
 }
 
 /*
- * \\fn Debayer::get_histogram
+ * \\fn void Debayer::consume
  *
- * created on: Feb 13, 2020
+ * created on: Feb 14, 2020
  * author: daniel
  *
  */
-bool Debayer::get_histogram(image::HistPtr& histogram)
+void Debayer::consume(image::ImageBox box)
 {
-  if (!histogram)
-    histogram.reset(new image::Histogram);
-
-  if (histogram->_histogram.size() != _impl->_histogram_size)
-    histogram->_histogram.resize(_impl->_histogram_size);
-
-  assert(cudaMemcpy(histogram->_histogram.data(), _impl->_histogram, _impl->_histogram_size * sizeof(uint32_t),cudaMemcpyDeviceToHost) == cudaSuccess);
-
-  if (histogram->_small_hist.size() != _impl->_small_histogram_size)
-    histogram->_small_hist.resize(_impl->_small_histogram_size);
-
-  assert(cudaMemcpy(histogram->_small_hist.data(), _impl->_small_histogram, _impl->_small_histogram_size * sizeof(uint32_t),cudaMemcpyDeviceToHost) == cudaSuccess);
-  assert(cudaMemcpy(&histogram->_max_value, _impl->_histogram_max, sizeof(uint32_t),cudaMemcpyDeviceToHost) == cudaSuccess);
-
-  return true;
+  for (image::ImagePtr img : box)
+  {
+    image::RawRGBPtr result = _impl->ahd(img->get_bits());
+    if (result)
+      ImageProducer::consume(image::ImageBox(result));
+  }
 }
 
-}
-// jupiter
-} // brt
+
+} /* namespace jupiter */
+} /* namespace brt */
