@@ -214,6 +214,7 @@ void ImageWindow::show_img(Context ctx)
         XDrawString (x11_display(ctx), handle(), _gc, x, y, text.at(index).c_str(), text.at(index).size());
       }
     }
+
     XFlush(x11_display(ctx));
 
 

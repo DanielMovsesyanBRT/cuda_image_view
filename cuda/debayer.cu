@@ -7,6 +7,7 @@
 
 #include "debayer.hpp"
 #include "cuda_2d_mem.hpp"
+#include "cuda_mem.hpp"
 
 namespace brt
 {
@@ -88,7 +89,7 @@ public:
 
   virtual ~Debayer_impl() {}
 
-          void                    init(size_t width,size_t height);
+          void                    init(size_t width,size_t height,size_t small_hits_size);
           image::RawRGBPtr        ahd(image::RawRGBPtr img);
 private:
 
@@ -99,6 +100,10 @@ private:
 
   Cuda2DPtr<LAB>                  _hlab;
   Cuda2DPtr<LAB>                  _vlab;
+
+  CudaPtr<uint32_t>               _histogram;
+  CudaPtr<uint32_t>               _histogram_max;
+  CudaPtr<uint32_t>               _small_histogram;
 
   int                             _thx,_thy;
   int                             _blkx,_blky;
@@ -111,9 +116,9 @@ private:
  * author daniel
  *
  */
-__global__ void green_interpolate(Cuda2DPtr<uint16_t> raw,
-                                  Cuda2DPtr<RGBA> hr,
-                                  Cuda2DPtr<RGBA> vr)
+__global__ void green_interpolate(Cuda2DRef<uint16_t> raw,
+                                  Cuda2DRef<RGBA> hr,
+                                  Cuda2DRef<RGBA> vr)
 {
   int origx = ((blockIdx.x * blockDim.x) + threadIdx.x) << 1;
   int origy = ((blockIdx.y * blockDim.y) + threadIdx.y) << 1;
@@ -174,11 +179,11 @@ __global__ void green_interpolate(Cuda2DPtr<uint16_t> raw,
  * author daniel
  *
  */
-__global__ void blue_red_interpolate( Cuda2DPtr<uint16_t> raw,
-                                      Cuda2DPtr<RGBA> hr,
-                                      Cuda2DPtr<RGBA> vr,
-                                      Cuda2DPtr<LAB> hl,
-                                      Cuda2DPtr<LAB> vl)
+__global__ void blue_red_interpolate( Cuda2DRef<uint16_t> raw,
+                                      Cuda2DRef<RGBA> hr,
+                                      Cuda2DRef<RGBA> vr,
+                                      Cuda2DRef<LAB> hl,
+                                      Cuda2DRef<LAB> vl)
 {
   int origx = ((blockIdx.x * blockDim.x) + threadIdx.x) << 1;
   int origy = ((blockIdx.y * blockDim.y) + threadIdx.y) << 1;
@@ -284,14 +289,16 @@ __global__ void blue_red_interpolate( Cuda2DPtr<uint16_t> raw,
  * author daniel
  *
  */
-__global__ void misguidance_color_artifacts(Cuda2DPtr<RGBA> rst,
-                                            Cuda2DPtr<RGBA> hr,
-                                            Cuda2DPtr<RGBA> vr,
-                                            Cuda2DPtr<LAB> hl,
-                                            Cuda2DPtr<LAB> vl)
+__global__ void misguidance_color_artifacts(Cuda2DRef<RGBA> rst,
+                                            Cuda2DRef<RGBA> hr,
+                                            Cuda2DRef<RGBA> vr,
+                                            Cuda2DRef<LAB> hl,
+                                            Cuda2DRef<LAB> vl,
+                                            uint32_t* histogram, size_t histogram_size,
+                                            uint32_t* small_histogram, size_t small_histogram_size)
 {
-//  int hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(histogram_size));
-//  int small_hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(small_histogram_size));
+  int hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(histogram_size));
+  int small_hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(small_histogram_size));
 
   int x = ((blockIdx.x * blockDim.x) + threadIdx.x);
   int y = ((blockIdx.y * blockDim.y) + threadIdx.y);
@@ -342,12 +349,46 @@ __global__ void misguidance_color_artifacts(Cuda2DPtr<RGBA> rst,
   b = rst(x,y)._b = (lf->_b + rt->_b) >> 1;
   rst(x,y)._a = (uint16_t)-1;
 
-//  uint32_t brightness = ((r+r+r+b+g+g+g+g) >> 3) * small_histogram_size >> small_hist_size_bits;
-//  atomicAdd(&small_histogram[brightness & ((1 << small_hist_size_bits) - 1)], 1);
-//
-//  brightness = ((r+r+r+b+g+g+g+g) >> 3) * histogram_size >> hist_size_bits;
-//  atomicAdd(&histogram[brightness & ((1 << hist_size_bits) - 1)], 1);
+  uint32_t brightness = ((r+r+r+b+g+g+g+g) >> 3) * small_histogram_size >> small_hist_size_bits;
+  atomicAdd(&small_histogram[brightness & ((1 << small_hist_size_bits) - 1)], 1);
+
+  brightness = ((r+r+r+b+g+g+g+g) >> 3) * histogram_size >> hist_size_bits;
+  atomicAdd(&histogram[brightness & ((1 << hist_size_bits) - 1)], 1);
 }
+
+
+/*
+ * \\fn void cudaMax
+ *
+ * created on: Nov 22, 2019
+ * author: daniel
+ *
+ */
+__global__ void cudaMax(uint32_t *org, uint32_t *max)
+{
+  const int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  max[tid] = org[tid];
+
+  auto step_size = 1;
+  int number_of_threads = gridDim.x * blockDim.x;
+
+  __syncthreads();
+
+  while (number_of_threads > 0)
+  {
+    if (tid < number_of_threads)
+    {
+      const auto fst = tid * step_size * 2;
+      const auto snd = fst + step_size;
+
+      max[fst] = (max[fst] < max[snd]) ? max[snd] : max[fst];
+    }
+
+    step_size <<= 1;
+    number_of_threads >>= 1;
+  }
+}
+
 
 /*
  * \\fn constructor Debayer::Debayer
@@ -383,7 +424,7 @@ Debayer::~Debayer()
  * author: daniel
  *
  */
-void Debayer_impl::init(size_t width,size_t height)
+void Debayer_impl::init(size_t width,size_t height,size_t small_hits_size)
 {
   _raw = Cuda2DPtr<uint16_t>(width,height,2,2);  _raw.fill(0);
 
@@ -393,6 +434,10 @@ void Debayer_impl::init(size_t width,size_t height)
 
   _hlab = Cuda2DPtr<LAB>(width,height,2,2); _hlab.fill(0);
   _vlab = Cuda2DPtr<LAB>(width,height,2,2); _vlab.fill(0);
+
+  _histogram = CudaPtr<uint32_t>(1 << 16); _histogram.fill(0);
+  _histogram_max = CudaPtr<uint32_t>(1 << 16); _histogram_max.fill(0);
+  _small_histogram = CudaPtr<uint32_t>(small_hits_size); _small_histogram.fill(0);
 
   _thx = std::min(DEFAULT_NUMBER_OF_THREADS, (1 << __builtin_ctz(width)));
   if (_thx == 0)
@@ -422,7 +467,7 @@ bool Debayer::init(size_t width,size_t height,size_t small_hits_size)
   if ((_width == width) && (_height == height))
     return true;
 
-  _impl->init(width, height);
+  _impl->init(width, height, small_hits_size);
   return true;
 }
 
@@ -443,14 +488,38 @@ image::RawRGBPtr Debayer_impl::ahd(image::RawRGBPtr img)
   dim3 threads(_thx >> 1,_thy >> 1);
   dim3 blocks(_blkx, _blky);
 
-  green_interpolate<<<blocks,threads>>>(_raw, _horiz, _vert);
-  blue_red_interpolate<<<blocks,threads>>>(_raw, _horiz, _vert, _hlab, _vlab);
+  green_interpolate<<<blocks,threads>>>(_raw.ref(), _horiz.ref(), _vert.ref());
+  blue_red_interpolate<<<blocks,threads>>>(_raw.ref(), _horiz.ref(), _vert.ref(), _hlab.ref(), _vlab.ref());
+
+
+  _histogram_max.fill(0);
+  _small_histogram.fill(0);
 
   dim3 threads2(_thx,_thy);
-  misguidance_color_artifacts<<<blocks,threads2>>>(_result, _horiz, _vert, _hlab, _vlab);
+  misguidance_color_artifacts<<<blocks,threads2>>>(_result.ref(), _horiz.ref(),
+                      _vert.ref(), _hlab.ref(), _vlab.ref(),
+                      _histogram.ptr(), _histogram.size(),
+                      _small_histogram.ptr(), _small_histogram.size());
+
+  int thx = 64;
+  while (_histogram.size() < thx)
+    thx >>= 1;
+
+  cudaMax<<<_histogram.size() / thx, thx>>>(_histogram.ptr(), _histogram_max.ptr());
 
   image::RawRGBPtr result(new image::RawRGB(img->width(), img->height(), img->depth(), image::eRGBA));
   _result.get((RGBA*)result->bytes());
+
+  image::HistPtr  full_hist(new image::Histogram);
+  full_hist->_histogram.resize(_histogram.size());
+  full_hist->_small_hist.resize(_small_histogram.size());
+
+  _histogram.get(full_hist->_histogram.data(), full_hist->_histogram.size());
+  _small_histogram.get(full_hist->_small_hist.data(), full_hist->_small_hist.size());
+  _histogram_max.get(&full_hist->_max_value, 1);
+
+  result->set_histogram(full_hist);
+
 
   return result;
 }

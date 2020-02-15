@@ -12,11 +12,42 @@
 #include <stddef.h>
 #include <stdint.h>
 
-
 #include "private/cuda/cuda_2d_data.hpp"
 
 namespace brt {
 namespace jupiter {
+
+
+/*
+ * \\class Cuda2DRef
+ *
+ * created on: Feb 14, 2020
+ *
+ */
+template <typename T>
+class Cuda2DRef
+{
+public:
+  Cuda2DRef(cudaPitchedPtr mem,int xoffset, int yoffset)
+  : _mem(mem), _xo(xoffset), _yo(yoffset)
+  {  }
+
+  Cuda2DRef(const Cuda2DRef& rf)
+  : _mem(rf._mem), _xo(rf._xo), _yo(rf._yo)
+  { }
+
+  __device__ T& operator()(int x,int y)
+  {
+    int offset = (x + _xo) * sizeof(T) + (y + _yo) * _mem.pitch;
+    return *(reinterpret_cast<T*>( ((uint8_t*)_mem.ptr) + offset));
+  }
+
+private:
+  cudaPitchedPtr                  _mem;
+  int                             _xo;
+  int                             _yo;
+};
+
 
 /*
  * \\class Cuda2DPtr
@@ -144,32 +175,19 @@ public:
     return _data->height()- (_yoffset * 2);
   }
 
+
   /*
-   * \\fn T&  at(int x,int y)
+   * \\fn Cuda2DRef<T>  ref
    *
    * created on: Feb 14, 2020
    * author: daniel
    *
    */
-  __device__ T*  at(int x,int y)
+  Cuda2DRef<T>              ref()
   {
-    if (_data == nullptr)
-      return nullptr;
-
-    return reinterpret_cast<T*>(_data->at((_xoffset + x) * sizeof(T),_yoffset + y));
+    return Cuda2DRef<T>(_data->mem(), _xoffset, _yoffset);
   }
 
-  /*
-   * \\fn T& operator()(int x,int y)
-   *
-   * created on: Feb 14, 2020
-   * author: daniel
-   *
-   */
-  __device__ T& operator()(int x,int y)
-  {
-    return *at(x,y);
-  }
 
   /*
    * \\fn void put
@@ -183,7 +201,7 @@ public:
     if (_data == nullptr)
       return;
 
-    _data->from_host(data, width(), height(), _xoffset, _yoffset);
+    _data->from_host(data, width() * sizeof(T), height(), _xoffset * sizeof(T), _yoffset);
   }
 
   /*
@@ -198,7 +216,7 @@ public:
     if (_data == nullptr)
       return;
 
-    _data->to_host(data, width(), height(), _xoffset, _yoffset);
+    _data->to_host(data, width() * sizeof(T), height(), _xoffset * sizeof(T), _yoffset);
   }
 
 private:

@@ -79,12 +79,12 @@ void show_window(const std::string& filename,
   if (raw_image->type() == image::eBayer)
   {
     Debayer db;
-    db.init(raw_image->width(),raw_image->height(),image::eBGRA,9);
-    image = db.debayer(raw_image);
+    db.init(raw_image->width(),raw_image->height(),9);
+    image = db.ahd(raw_image);
 
-    image::HistPtr hist;
-    db.get_histogram(hist);
-    image->set_histogram(hist);
+//    image::HistPtr hist;
+//    db.get_histogram(hist);
+//    image->set_histogram(hist);
   }
   else
     image = raw_image;

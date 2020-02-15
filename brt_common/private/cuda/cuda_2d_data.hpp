@@ -20,6 +20,7 @@ namespace brt {
 namespace jupiter {
 
 
+
 /*
  * \\class Cuda2DData
  *
@@ -48,14 +49,15 @@ public:
           size_t                  width() const;
           size_t                  height() const;
 
-          __device__ void*        at(int x,int y)
-          {
-            if (!_valid)
-              return nullptr;
-
-            int offset = x + y * _pitchedDevPtr.pitch;
-            return ((uint8_t*)_pitchedDevPtr.ptr) + offset;
-          }
+          cudaPitchedPtr          mem() { return _pitchedDevPtr; }
+//          __device__ void*        at(int x,int y)
+//          {
+//            if (!_valid)
+//              return nullptr;
+//
+//            int offset = x + y * _pitchedDevPtr.pitch;
+//            return ((uint8_t*)_pitchedDevPtr.ptr) + offset;
+//          }
 
           bool                    valid() const { return _valid; }
 private:
@@ -63,6 +65,9 @@ private:
   bool                            _valid;
   std::atomic_int_fast32_t        _ref_cnt;
 };
+
+
+
 
 }
 }

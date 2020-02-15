@@ -38,7 +38,7 @@ public:
    */
   CudaPtr(size_t size) : _data(new CudaData(size * sizeof(T)))
   {
-    if (!_data->_valid)
+    if (!_data->valid())
     {
       delete _data;
       _data = nullptr;
@@ -203,7 +203,7 @@ public:
    * author: daniel
    *
    */
-  void fill(uint8_t value)
+  void fill(int value)
   {
     if ((_data == nullptr) || (!_data->valid()))
       return;
