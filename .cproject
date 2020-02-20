@@ -13,7 +13,7 @@
 				</extensions>
 			</storageModule>
 			<storageModule moduleId="cdtBuildSystem" version="4.0.0">
-				<configuration artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" description="" id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973" name="Debug" optionalBuildProperties="org.eclipse.cdt.docker.launcher.containerbuild.property.selectedvolumes=,org.eclipse.cdt.docker.launcher.containerbuild.property.volumes=" parent="com.nvidia.cuda.toolchain.linux.configuration.debug">
+				<configuration artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" description="" id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973" name="Debug" optionalBuildProperties="org.eclipse.cdt.docker.launcher.containerbuild.property.volumes=,org.eclipse.cdt.docker.launcher.containerbuild.property.selectedvolumes=" parent="com.nvidia.cuda.toolchain.linux.configuration.debug">
 					<folderInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973." name="/" resourcePath="">
 						<toolChain id="com.nvidia.cuda.toolchain.linux.debugToolchain.147540314" name="CUDA Linux toolchain" superClass="com.nvidia.cuda.toolchain.linux.debugToolchain">
 							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.nvidia.cuda.toolchain.targetLinuxPlatform.1414685523" isAbstract="false" osList="linux" superClass="com.nvidia.cuda.toolchain.targetLinuxPlatform"/>
@@ -46,9 +46,6 @@
 							</tool>
 						</toolChain>
 					</folderInfo>
-					<fileInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973.986391286" name="debayer.cu" rcbsApplicability="disable" resourcePath="cuda/debayer.cu" toolsToInvoke="nvcc.compiler.406025928.1140331336">
-						<tool id="nvcc.compiler.406025928.1140331336" name="NVCC Compiler" superClass="nvcc.compiler.406025928"/>
-					</fileInfo>
 					<fileInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973.487320388" name="debayer.hpp" rcbsApplicability="disable" resourcePath="cuda/debayer.hpp" toolsToInvoke=""/>
 					<fileInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973.823353005" name="image_list_window.hpp" rcbsApplicability="disable" resourcePath="window/image_list_window.hpp" toolsToInvoke=""/>
 					<fileInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973.1714610390" name="camera_window.hpp" rcbsApplicability="disable" resourcePath="window/camera_window.hpp" toolsToInvoke=""/>

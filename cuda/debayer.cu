@@ -248,9 +248,6 @@ __global__ void blue_red_interpolate( size_t width, size_t height,
 
   auto limit = [](int x,int a,int b)->int
   {
-    if (a>b)
-      return (x<b)?b:(x>a)?a:x;
-
     return (x<a)?a:(x>b)?b:x;
   };
 
@@ -264,33 +261,21 @@ __global__ void blue_red_interpolate( size_t width, size_t height,
   int io = x + y * width; // input offset
 
   {
-    int pp[] = { (x > 0) ? raw[io - 1] : 0,                      // x-1,y
-                 (y > 0) ? raw[io - width] : 0,                  // x,y-1
-                 (x < (width - 1)) ? raw[io + 1] : 0,            // x+1,y
-                 (y < (height - 1)) ? raw[io + width] : 0};      // x,y+1
+    hr[io]._r = limit(hr[io]._g+(( ((x>0)?raw[io-1]:0) - ((x>0)?hr[io-1]._g:0) +            // x-1,y
+                                    raw[io+1] - hr[io+1]._g) >> 1),                         // x+1,y
+                                    0,(1<<16)-1);
 
-    int ph[] = { (x > 0) ? hr[io - 1]._g : 0,                    // x-1,y
-                 (y > 0) ? hr[io - width]._g : 0,                // x,y-1
-                 (x < (width - 1)) ? hr[io + 1]._g : 0,          // x+1,y
-                 (y < (height - 1)) ? hr[io + width]._g : 0};    // x,y+1
+    hr[io]._b = limit(hr[io]._g+(( ((y>0)?raw[io-width]:0) - ((y>0)?hr[io-width]._g:0) +    // x,y-1
+                                    raw[io+width] - hr[io+width]._g) >> 1),                 // x,y+1
+                                    0,(1<<16)-1);
 
-    int pv[] = { (x > 0) ? vr[io - 1]._g : 0,                    // x-1,y
-                 (y > 0) ? vr[io - width]._g  : 0,               // x,y-1
-                 (x < (width - 1)) ? vr[io + 1]._g : 0,          // x+1,y
-                 (y < (height - 1)) ? vr[io + width]._g : 0};    // x,y+1
+    vr[io]._r = limit(vr[io]._g+(( ((x>0)?raw[io-1]:0) - ((x>0)?vr[io-1]._g:0) +            // x-1,y
+                                    raw[io+1] - vr[io+1]._g) >> 1),                         // x+1,y
+                                    0,(1<<16)-1);
 
-
-    int value = hr[io]._g + ((pp[0] - ph[0] + pp[2] - ph[2]) >> 1);
-    hr[io]._r = limit(value,0,(1<<16)-1);
-
-    value = hr[io]._g + ((pp[1] - ph[1] + pp[3] - ph[3]) >> 1);
-    hr[io]._b = limit(value,0,(1<<16)-1);
-
-    value = vr[io]._g + ((pp[0] - pv[0] + pp[2] - pv[2]) >> 1);
-    vr[io]._r = limit(value,0,(1<<16)-1);
-
-    value = vr[io]._g + ((pp[1] - pv[1] + pp[3] - pv[3]) >> 1);
-    vr[io]._b = limit(value,0,(1<<16)-1);
+    vr[io]._b = limit(vr[io]._g+(( ((y>0)?raw[io-width]:0) - ((y>0)?vr[io-width]._g:0) +    // x,y-1
+                                    raw[io+width] - vr[io+width]._g) >> 1),                 // x,y+1
+                                    0,(1<<16)-1);
 
     hl[io].from(hr[io]);
     vl[io].from(vr[io]);
@@ -304,27 +289,33 @@ __global__ void blue_red_interpolate( size_t width, size_t height,
   {
     hr[io]._r = vr[io]._r = raw[io];
 
-    int pp[] = { (x > 0 && y > 0) ? raw[io - width - 1] : 0,                            // x-1,y-1
-                 (x > 0 && y < (height - 1)) ? raw[io + width - 1] : 0,                 // x-1,y+1
-                 (x < (width - 1) && y > 0) ? raw[io - width + 1] : 0,                  // x+1,y-1
-                 (x < (width - 1) && y < (height - 1)) ? raw[io + width + 1] : 0};      // x+1,y+1
+    hr[io]._b = limit(hr[io]._g+((
+                                  ((y>0)?raw[io-width-1]:0) -
+                                      ((y>0)?hr[io-width-1]._g:0) +                       // x-1,y-1
 
-    int ph[] = { (x > 0 && y > 0) ? hr[io - width - 1]._g : 0,                          // x-1,y-1
-                 (x > 0 && y < (height - 1)) ? hr[io + width - 1]._g : 0,               // x-1,y+1
-                 (x < (width - 1) && y > 0) ? hr[io - width + 1]._g : 0,                // x+1,y-1
-                 (x < (width - 1) && y < (height - 1)) ? hr[io + width + 1]._g : 0};    // x+1,y+1
+                                  raw[io+width-1] - hr[io+width-1]._g +                   // x-1,y+1
 
-    int pv[] = { (x > 0 && y > 0) ? vr[io - width - 1]._g : 0,                          // x-1,y-1
-                 (x > 0 && y < (height - 1)) ? vr[io + width - 1]._g : 0,               // x-1,y+1
-                 (x < (width - 1) && y > 0) ? vr[io - width + 1]._g : 0,                // x+1,y-1
-                 (x < (width - 1) && y < (height - 1)) ? vr[io + width + 1]._g : 0};    // x+1,y+1
+                                  (((x<(width-1))&&(y>0))?raw[io-width+1]:0) -
+                                      (((x<(width-1))&&(y>0))?hr[io-width+1]._g:0) +      // x+1,y-1
 
-    // horizontal
-    int value = hr[io]._g + ((sum(pp) - sum(ph)) >> 2);
-    hr[io]._b = limit(value,0,(1<<16)-1);
+                                  ((x<(width-1))?raw[io+width+1]:0) -
+                                      ((x<(width-1))?hr[io+width+1]._g:0)                 // x+1,y+1
+                                )>> 2),
+                                0,(1<<16)-1);
 
-    value = vr[io]._g + ((sum(pp) - sum(pv)) >> 2);
-    vr[io]._b = limit(value,0,(1<<16)-1);
+    vr[io]._b = limit(vr[io]._g+((
+                                  ((y>0)?raw[io-width-1]:0) -
+                                      ((y>0)?vr[io-width-1]._g:0) +                       // x-1,y-1
+
+                                  raw[io+width-1] - vr[io+width-1]._g +                   // x-1,y+1
+
+                                  (((x<(width-1))&&(y>0))?raw[io-width+1]:0) -
+                                      (((x<(width-1))&&(y>0))?vr[io-width+1]._g:0) +      // x+1,y-1
+
+                                  ((x<(width-1))?raw[io+width+1]:0) -
+                                      ((x<(width-1))?vr[io+width+1]._g:0)                 // x+1,y+1
+                                )>> 2),
+                                0,(1<<16)-1);
 
     hl[io].from(hr[io]);
     vl[io].from(vr[io]);
@@ -338,27 +329,33 @@ __global__ void blue_red_interpolate( size_t width, size_t height,
   {
     hr[io]._b = vr[io]._b = raw[io];
 
-    int pp[] = { (x > 0 && y > 0) ? raw[io - width - 1] : 0,                            // x-1,y-1
-                 (x > 0 && y < (height - 1)) ? raw[io + width - 1] : 0,                 // x-1,y+1
-                 (x < (width - 1) && y > 0) ? raw[io - width + 1] : 0,                  // x+1,y-1
-                 (x < (width - 1) && y < (height - 1)) ? raw[io + width + 1] : 0};      // x+1,y+1
+    hr[io]._r = limit(hr[io]._g+((
+                                  ((x>0)?raw[io-width-1]:0) -
+                                      ((x>0)?hr[io-width-1]._g:0) +                       // x-1,y-1
 
-    int ph[] = { (x > 0 && y > 0) ? hr[io - width - 1]._g : 0,                          // x-1,y-1
-                 (x > 0 && y < (height - 1)) ? hr[io + width - 1]._g : 0,               // x-1,y+1
-                 (x < (width - 1) && y > 0) ? hr[io - width + 1]._g : 0,                // x+1,y-1
-                 (x < (width - 1) && y < (height - 1)) ? hr[io + width + 1]._g : 0};    // x+1,y+1
+                                  (((x>0)&&(y<(height-1)))?raw[io+width-1]:0) -
+                                      (((x>0)&&(y<(height-1)))?hr[io+width-1]._g:0) +     // x-1,y+1
 
-    int pv[] = { (x > 0 && y > 0) ? vr[io - width - 1]._g : 0,                          // x-1,y-1
-                 (x > 0 && y < (height - 1)) ? vr[io + width - 1]._g : 0,               // x-1,y+1
-                 (x < (width - 1) && y > 0) ? vr[io - width + 1]._g : 0,                // x+1,y-1
-                 (x < (width - 1) && y < (height - 1)) ? vr[io + width + 1]._g : 0};    // x+1,y+1
+                                  raw[io-width+1] - hr[io-width+1]._g +                   // x+1,y-1
 
-    // horizontal
-    int value = hr[io]._g + ((sum(pp) - sum(ph)) >> 2);
-    hr[io]._r = limit(value,0,(1<<16)-1);
+                                  ((y<(height-1))?raw[io+width+1]:0) -
+                                      ((y<(height-1))?hr[io+width+1]._g:0)                // x+1,y+1
+                                )>> 2),
+                                0,(1<<16)-1);
 
-    value = vr[io]._g + ((sum(pp) - sum(pv)) >> 2);
-    vr[io]._r = limit(value,0,(1<<16)-1);
+    vr[io]._r = limit(vr[io]._g+((
+                                  ((x>0)?raw[io-width-1]:0) -
+                                      ((x>0)?vr[io-width-1]._g:0) +                       // x-1,y-1
+
+                                  (((x>0)&&(y<(height-1)))?raw[io+width-1]:0) -
+                                      (((x>0)&&(y<(height-1)))?vr[io+width-1]._g:0) +     // x-1,y+1
+
+                                  raw[io-width+1] - vr[io-width+1]._g +                   // x+1,y-1
+
+                                  ((y<(height-1))?raw[io+width+1]:0) -
+                                      ((y<(height-1))?vr[io+width+1]._g:0)                // x+1,y+1
+                                )>> 2),
+                                0,(1<<16)-1);
 
     hl[io].from(hr[io]);
     vl[io].from(vr[io]);
@@ -371,32 +368,32 @@ __global__ void blue_red_interpolate( size_t width, size_t height,
   io = x + y * width; // input offset
 
   {
-    int pp[] = { (x > 0) ? raw[io - 1] : 0,                      // x-1,y
-                 (y > 0) ? raw[io - width] : 0,                  // x,y-1
-                 (x < (width - 1)) ? raw[io + 1] : 0,            // x+1,y
-                 (y < (height - 1)) ? raw[io + width] : 0};      // x,y+1
+    hr[io]._b = limit(hr[io]._g+(( raw[io-1] - hr[io-1]._g +                              // x-1,y
 
-    int ph[] = { (x > 0) ? hr[io - 1]._g : 0,                    // x-1,y
-                 (y > 0) ? hr[io - width]._g : 0,                // x,y-1
-                 (x < (width - 1)) ? hr[io + 1]._g : 0,          // x+1,y
-                 (y < (height - 1)) ? hr[io + width]._g : 0};    // x,y+1
+                                   ((x<(width-1))?raw[io+1]:0) -
+                                       ((x<(width-1))?hr[io+1]._g:0)) >> 1),              // x+1,y
+                                    0,(1<<16)-1);
 
-    int pv[] = { (x > 0) ? vr[io - 1]._g : 0,                    // x-1,y
-                 (y > 0) ? vr[io - width]._g  : 0,               // x,y-1
-                 (x < (width - 1)) ? vr[io + 1]._g : 0,          // x+1,y
-                 (y < (height - 1)) ? vr[io + width]._g : 0};    // x,y+1
 
-    int value = hr[io]._g + ((pp[0] - ph[0] + pp[2] - ph[2]) >> 1);
-    hr[io]._b = limit(value,0,(1<<16)-1);
+    hr[io]._r = limit(hr[io]._g+(( raw[io-width] - hr[io-width]._g +                      // x,y-1
 
-    value = hr[io]._g + ((pp[1] - ph[1] + pp[3] - ph[3]) >> 1);
-    hr[io]._r = limit(value,0,(1<<16)-1);
+                                   ((y<(height-1))?raw[io+width]:0) -
+                                       ((y<(height-1))?hr[io+width]._g:0)) >> 1),         // x,y+1
+                                    0,(1<<16)-1);
 
-    value = vr[io]._g + ((pp[0] - pv[0] + pp[2] - pv[2]) >> 1);
-    vr[io]._b = limit(value,0,(1<<16)-1);
 
-    value = vr[io]._g + ((pp[1] - pv[1] + pp[3] - pv[3]) >> 1);
-    vr[io]._r = limit(value,0,(1<<16)-1);
+    vr[io]._b = limit(vr[io]._g+(( raw[io-1] - vr[io-1]._g +                              // x-1,y
+
+                                   ((x<(width-1))?raw[io+1]:0) -
+                                       ((x<(width-1))?vr[io+1]._g:0)) >> 1),              // x+1,y
+                                    0,(1<<16)-1);
+
+
+    vr[io]._r = limit(vr[io]._g+(( raw[io-width] - vr[io-width]._g +                      // x,y-1
+
+                                   ((y<(height-1))?raw[io+width]:0) -
+                                       ((y<(height-1))?vr[io+width]._g:0)) >> 1),         // x,y+1
+                                    0,(1<<16)-1);
 
     hl[io].from(hr[io]);
     vl[io].from(vr[io]);
