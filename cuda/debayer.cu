@@ -85,24 +85,9 @@ struct LAB
 
   __device__ void                 from(RGBA& rgba)
   {
-    uint32_t X,Y,Z;
-
-    // Matrix multiplication
-    X = (rgba._r * 2 / 5 +
-         rgba._g * 8 / 22 +
-         rgba._b * 2 / 11) * 105 / 100;
-
-    Y = (rgba._r * 4 / 19 +
-         rgba._g * 8 / 11 +
-         rgba._b * 4 / 55);
-
-    Z = (rgba._r * 2 / 103 +
-         rgba._g * 8 / 67 +
-         rgba._b * 100 / 105) * 108 / 100;
-
-    _L = 116 * Y - 16;
-    _a = 5 * (X - Y);
-    _b = 2 * (Y - Z);
+    _L = (rgba._r+rgba._r+rgba._r + rgba._b + rgba._g+rgba._g+rgba._g+rgba._g) >> 3;
+    _a = 5 * (rgba._r+rgba._r + rgba._b - rgba._g-rgba._g-rgba._g);
+    _b = 4 * (rgba._r+rgba._r + rgba._g+rgba._g+rgba._g - rgba._b-rgba._b-rgba._b-rgba._b);
   }
 };
 
@@ -253,6 +238,138 @@ __global__ void blue_red_interpolate( size_t width, size_t height,
 
   auto sum = [](int arr[4])->int { return arr[0] + arr[1] + arr[2] + arr[3]; };
 
+  int h_sub[4][4] = { {0,0,0,0}, {0,0,0,0}, {0,0,0,0}, {0,0,0,0} };
+  int v_sub[4][4] = { {0,0,0,0}, {0,0,0,0}, {0,0,0,0}, {0,0,0,0} };
+
+  int io = origx + origy * width;
+
+
+  if (origx > 0)
+  {
+    if (origy > 0)
+    {
+      h_sub[0][0] = raw[io-width-1] - hr[io-width-1]._g;
+      v_sub[0][0] = raw[io-width-1] - vr[io-width-1]._g;
+    }
+
+    h_sub[1][0] = raw[io-1] - hr[io-1]._g;
+    v_sub[1][0] = raw[io-1] - vr[io-1]._g;
+
+    h_sub[2][0] = raw[io+width-1] - hr[io+width-1]._g;
+    v_sub[2][0] = raw[io+width-1] - vr[io+width-1]._g;
+
+    if (origy < (height - 2))
+    {
+      h_sub[3][0] = raw[io+2*width-1] - hr[io+2*width-1]._g;
+      v_sub[3][0] = raw[io+2*width-1] - vr[io+2*width-1]._g;
+    }
+  }
+
+  if (origx < (width - 2))
+  {
+    if (origy > 0)
+    {
+      h_sub[0][3] = raw[io-width+2] - hr[io-width+2]._g;
+      v_sub[0][3] = raw[io-width+2] - vr[io-width+2]._g;
+    }
+
+    h_sub[1][3] = raw[io+2] - hr[io+2]._g;
+    v_sub[1][3] = raw[io+2] - vr[io+2]._g;
+
+    h_sub[2][3] = raw[io+width+2] - hr[io+width+2]._g;
+    v_sub[2][3] = raw[io+width+2] - vr[io+width+2]._g;
+
+    if (origy < (height - 2))
+    {
+      h_sub[3][3] = raw[io+2*width+2] - hr[io+2*width+2]._g;
+      v_sub[3][3] = raw[io+2*width+2] - vr[io+2*width+2]._g;
+    }
+  }
+
+  if (origy > 0)
+  {
+    h_sub[0][1] = raw[io-width] - hr[io-width]._g;
+    v_sub[0][1] = raw[io-width] - vr[io-width]._g;
+
+    h_sub[0][2] = raw[io-width+1] - hr[io-width+1]._g;
+    v_sub[0][2] = raw[io-width+1] - vr[io-width+1]._g;
+  }
+
+  if (origy < (height - 2))
+  {
+    h_sub[3][1] = raw[io+2*width] - hr[io+2*width]._g;
+    v_sub[3][1] = raw[io+2*width] - vr[io+2*width]._g;
+
+    h_sub[3][2] = raw[io+2*width+1] - hr[io+2*width+1]._g;
+    v_sub[3][2] = raw[io+2*width+1] - vr[io+2*width+1]._g;
+  }
+
+  h_sub[1][1] = raw[io] - hr[io]._g;
+  v_sub[1][1] = raw[io] - vr[io]._g;
+
+  h_sub[1][2] = raw[io+1] - hr[io+1]._g;
+  v_sub[1][2] = raw[io+1] - vr[io+1]._g;
+
+  h_sub[2][1] = raw[io+width] - hr[io+width]._g;
+  v_sub[2][1] = raw[io+width] - vr[io+width]._g;
+
+  h_sub[2][2] = raw[io+width+1] - hr[io+width+1]._g;
+  v_sub[2][2] = raw[io+width+1] - vr[io+width+1]._g;
+
+
+  // C R
+  // B C
+  ////////////////////////////////////////////////
+  // (0,0) -> ClearRead
+  {
+    hr[io]._r = limit(hr[io]._g + ((h_sub[1][0] + h_sub[1][2]) >> 1),0,(1<<16)-1);
+    hr[io]._b = limit(hr[io]._g + ((h_sub[0][1] + h_sub[2][1]) >> 1),0,(1<<16)-1);
+
+    vr[io]._r = limit(vr[io]._g + ((v_sub[1][0] + v_sub[1][2]) >> 1),0,(1<<16)-1);
+    vr[io]._b = limit(vr[io]._g + ((v_sub[0][1] + v_sub[2][1]) >> 1),0,(1<<16)-1);
+
+    hl[io].from(hr[io]);
+    vl[io].from(vr[io]);
+  }
+
+  ////////////////////////////////////////////////
+  // (1,0) -> Red
+  {
+    hr[io+1]._r = vr[io+1]._r = raw[io+1];
+
+    hr[io+1]._b = limit(hr[io+1]._g + ((h_sub[0][1] + h_sub[0][3] + h_sub[2][1] + h_sub[2][3]) >> 2),0,(1<<16)-1);
+    vr[io+1]._b = limit(vr[io+1]._g + ((v_sub[0][1] + v_sub[0][3] + v_sub[2][1] + v_sub[2][3]) >> 2),0,(1<<16)-1);
+
+    hl[io+1].from(hr[io+1]);
+    vl[io+1].from(vr[io+1]);
+  }
+
+  ////////////////////////////////////////////////
+  // (0,1) -> Blue
+  {
+    hr[io+width]._b = vr[io+width]._b = raw[io+width];
+
+    hr[io+width]._r = limit(hr[io+width]._g + ((h_sub[1][0] + h_sub[1][2] + h_sub[3][0] + h_sub[3][2]) >> 2),0,(1<<16)-1);
+    vr[io+width]._r = limit(vr[io+width]._g + ((v_sub[1][0] + v_sub[1][2] + v_sub[3][0] + v_sub[3][2]) >> 2),0,(1<<16)-1);
+
+    hl[io+width].from(hr[io+width]);
+    vl[io+width].from(vr[io+width]);
+  }
+
+  ////////////////////////////////////////////////
+  // (1,1) -> ClearBlue
+  {
+    hr[io+width+1]._b = limit(hr[io+width+1]._g + ((h_sub[2][1] + h_sub[2][3]) >> 1),0,(1<<16)-1);
+    hr[io+width+1]._r = limit(hr[io+width+1]._g + ((h_sub[1][2] + h_sub[3][2]) >> 1),0,(1<<16)-1);
+
+    vr[io+width+1]._b = limit(vr[io+width+1]._g + ((v_sub[2][1] + v_sub[2][3]) >> 1),0,(1<<16)-1);
+    vr[io+width+1]._r = limit(vr[io+width+1]._g + ((v_sub[1][2] + v_sub[3][2]) >> 1),0,(1<<16)-1);
+
+    hl[io+width+1].from(hr[io+width+1]);
+    vl[io+width+1].from(vr[io+width+1]);
+  }
+
+#if 0
   // C R
   // B C
   ////////////////////////////////////////////////
@@ -398,6 +515,7 @@ __global__ void blue_red_interpolate( size_t width, size_t height,
     hl[io].from(hr[io]);
     vl[io].from(vr[io]);
   }
+#endif
 }
 
 
