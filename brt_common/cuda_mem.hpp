@@ -174,7 +174,7 @@ public:
    */
   const T* ptr() const
   {
-    if ((_data == nullptr) || (!_data->valid()))
+    if (_data == nullptr)
       return nullptr;
 
     return (T*)(_data->ptr());
@@ -189,7 +189,7 @@ public:
    */
   T* ptr()
   {
-    if ((_data == nullptr) || (!_data->valid()))
+    if (_data == nullptr)
       return nullptr;
 
     return (T*)(_data->ptr());
@@ -231,9 +231,65 @@ public:
     return true;
   }
 
-private:
+protected:
   CudaData*                       _data;
 };
+
+
+/*
+ * \\class Cuda2DMem
+ *
+ * created on: Feb 18, 2020
+ *
+ */
+template <class T>
+class Cuda2DMem : public CudaPtr<T>
+{
+public:
+  Cuda2DMem():_width(0),_height(0) {}
+
+  Cuda2DMem(uint32_t w,uint32_t h)
+  : CudaPtr<T>(w * h)
+  , _width(w)
+  , _height(h)
+  {   }
+
+  Cuda2DMem(const Cuda2DMem& mem)
+  : CudaPtr<T>((const CudaPtr<T>&)mem)
+  , _width(mem._width)
+  , _height(mem._height)
+  {}
+
+  Cuda2DMem& operator=(const Cuda2DMem& mem)
+  {
+    *((CudaPtr<T>*)this) = (const CudaPtr<T>&)mem;
+    _width = mem._width;
+    _height = mem._height;
+
+    return *this;
+  }
+
+  __device__ const T operator()(int x,int y) const
+  {
+    if ((x < 0) || (y < 0) || (x >= _width) || (y >= _height))
+      return (T)0;
+
+    int offset = (x  + y * _width);
+    return  *( ((T*)CudaPtr<T>::_data->ptr()) + offset);
+  }
+
+  __device__ T& operator()(int x,int y)
+  {
+    int offset = (x  + y * _width);
+    return  *( ((T*)CudaPtr<T>::_data->ptr()) + offset);
+  }
+
+private:
+  uint32_t                        _width;
+  uint32_t                        _height;
+};
+
+
 
 } // jupiter
 } // brt

@@ -17,6 +17,7 @@
 #include "window_manager.hpp"
 
 #include "debayer.hpp"
+#include "debayer_bilin.hpp"
 
 
 using namespace brt::jupiter;
@@ -78,8 +79,11 @@ void show_window(const std::string& filename,
   image::RawRGBPtr raw_image(new image::RawRGB(filename.c_str()));
   if (raw_image->type() == image::eBayer)
   {
-    Debayer db;
-    db.init(raw_image->width(),raw_image->height(),9);
+//    Debayer db;
+//    db.init(raw_image->width(),raw_image->height(),9);
+//    image = db.ahd(raw_image);
+
+    Debayer_Bilinear db;
     image = db.ahd(raw_image);
 
 //    image::HistPtr hist;
@@ -105,6 +109,7 @@ void show_window(const std::string& filename,
 
     wnd->close();
   }
+
 }
 
 /*

@@ -22,7 +22,7 @@ namespace jupiter
 
 class Debayer_impl;
 /*
- * \\class Debayer
+ * \\class Debayer1D
  *
  * created on: Feb 14, 2020
  *

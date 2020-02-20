@@ -9,6 +9,8 @@
 #include "cuda_2d_mem.hpp"
 #include "cuda_mem.hpp"
 
+#include <cuda_profiler_api.h>
+
 namespace brt
 {
 namespace jupiter
@@ -38,6 +40,7 @@ struct RGBA
  * created on: Feb 14, 2020
  *
  */
+/*
 struct LAB
 {
   double                          _L;
@@ -49,28 +52,60 @@ struct LAB
     double X,Y,Z;
 
     // Matrix multiplication
-    X = (0.412453 * static_cast<double>(rgba._r)  +
-         0.357580 * static_cast<double>(rgba._g)  +
-         0.180423 * static_cast<double>(rgba._b)) / _Xn;
+    X = (0.412453 * rgba._r  +
+         0.357580 * rgba._g  +
+         0.180423 * rgba._b) / _Xn;
 
-    Y = (0.212671 * static_cast<double>(rgba._r) +
-         0.715160 * static_cast<double>(rgba._g) +
-         0.072169 * static_cast<double>(rgba._b));
+    Y = (0.212671 * rgba._r +
+         0.715160 * rgba._g +
+         0.072169 * rgba._b);
 
-    Z = (0.019334 * static_cast<double>(rgba._r) +
-         0.119193 * static_cast<double>(rgba._g) +
-         0.950227 * static_cast<double>(rgba._b)) / _Zn;
+    Z = (0.019334 * rgba._r +
+         0.119193 * rgba._g +
+         0.950227 * rgba._b) / _Zn;
 
     auto adjust = [](double value)->double
     {
-      return (value > 0.00856) ? pow(value,0.33333333333) : (7.787 * value + 0.1379310);
+      return (value > 0.00856) ? cbrt(value) : (7.787 * value + 0.1379310);
     };
 
-    _L = (Y > 0.00856) ? (116.0 * pow(Y,0.33333333333) - 16.0) : 903.3 * Y;
+    _L = (Y > 0.00856) ? (116.0 * cbrt(Y) - 16.0) : 903.3 * Y;
     _a = 500.0 * (adjust(X) - adjust(Y));
     _b = 200.0 * (adjust(Y) - adjust(Z));
   }
 };
+*/
+
+struct LAB
+{
+  __device__ LAB() : _L(0), _a(0), _b(0) {}
+  int32_t                         _L;
+  int32_t                         _a;
+  int32_t                         _b;
+
+  __device__ void                 from(RGBA& rgba)
+  {
+    uint32_t X,Y,Z;
+
+    // Matrix multiplication
+    X = (rgba._r * 2 / 5 +
+         rgba._g * 8 / 22 +
+         rgba._b * 2 / 11) * 105 / 100;
+
+    Y = (rgba._r * 4 / 19 +
+         rgba._g * 8 / 11 +
+         rgba._b * 4 / 55);
+
+    Z = (rgba._r * 2 / 103 +
+         rgba._g * 8 / 67 +
+         rgba._b * 100 / 105) * 108 / 100;
+
+    _L = 116 * Y - 16;
+    _a = 5 * (X - Y);
+    _b = 2 * (Y - Z);
+  }
+};
+
 
 /*
  * \\class Debayer_impl
@@ -82,7 +117,7 @@ class Debayer_impl
 {
 friend Debayer;
 public:
-  Debayer_impl()
+Debayer_impl()
   : _thx(0),_thy(0)
   , _blkx(0),_blky(0)
   { }
@@ -93,13 +128,13 @@ public:
           image::RawRGBPtr        ahd(image::RawRGBPtr img);
 private:
 
-  Cuda2DPtr<uint16_t>             _raw;
-  Cuda2DPtr<RGBA>                 _horiz;
-  Cuda2DPtr<RGBA>                 _vert;
-  Cuda2DPtr<RGBA>                 _result;
+  Cuda2DMem<uint16_t>             _raw;
+  Cuda2DMem<RGBA>                 _horiz;
+  Cuda2DMem<RGBA>                 _vert;
+  Cuda2DMem<RGBA>                 _result;
 
-  Cuda2DPtr<LAB>                  _hlab;
-  Cuda2DPtr<LAB>                  _vlab;
+  Cuda2DMem<LAB>                  _hlab;
+  Cuda2DMem<LAB>                  _vlab;
 
   CudaPtr<uint32_t>               _histogram;
   CudaPtr<uint32_t>               _histogram_max;
@@ -109,6 +144,7 @@ private:
   int                             _blkx,_blky;
 };
 
+
 /*
  * \\fn void green_interpolate
  *
@@ -116,60 +152,83 @@ private:
  * author daniel
  *
  */
-__global__ void green_interpolate(Cuda2DRef<uint16_t> raw,
-                                  Cuda2DRef<RGBA> hr,
-                                  Cuda2DRef<RGBA> vr)
+__global__ void green_interpolate(size_t width, size_t height,
+                                          uint16_t* raw,
+                                          RGBA* hr, RGBA* vr)
 {
   int origx = ((blockIdx.x * blockDim.x) + threadIdx.x) << 1;
   int origy = ((blockIdx.y * blockDim.y) + threadIdx.y) << 1;
 
-
   auto limit = [](int x,int a,int b)->int
   {
-    int result = max(x,min(a,b));
-    return min(result,max(a,b));
+    if (a>b)
+      return (x<b)?b:(x>a)?a:x;
+
+    return (x<a)?a:(x>b)?b:x;
   };
 
   // C R
   // B C
   // (0,0) -> Clear
   int x = origx, y = origy;
-  vr(x,y)._g = hr(x,y)._g = raw(x,y);
-  vr(x,y)._a = hr(x,y)._a = (uint16_t)-1;
+  int io = x + y * width; // input offset
+
+  vr[io]._g = hr[io]._g = raw[io];
+  vr[io]._a = hr[io]._a = (uint16_t)-1;
 
   ////////////////////////////////////////////////
   // (1,0) -> Red
   x = origx + 1;
   y = origy;
+  io = x + y * width; // input offset
+  {
+    int px[] = { (x > 0) ? raw[io - 1] : 0,                // x-1,y
+                 (x < (width - 1)) ? raw[io + 1] : 0,      // x+1,y
+                 (x > 1) ? raw[io - 2] : 0,                // x-2,y
+                 (x < (width - 2)) ? raw[io + 2] : 0 };    // x+2,y
 
-  int value = (((raw(x-1,y) + raw(x,y) + raw(x+1,y)) * 2) - raw(x - 2,y) - raw(x + 2,y)) >> 2;
-  hr(x,y)._g = limit(value,raw(x - 1,y),raw(x + 1,y));
+    int value =  ((( px[0] + raw[io] + px[1]) * 2) - px[2] - px[3]) >> 2;
+    hr[io]._g = limit(value, px[0], px[1]);
 
-  value = (((raw(x,y-1) + raw(x,y) + raw(x,y+1)) * 2) - raw(x,y-2) - raw(x,y+2)) >> 2;
-  vr(x,y)._g = limit(value,raw(x,y-1),raw(x,y+1));
+    int py[] = { (y > 0) ? raw[io - width] : 0,                    // x,y-1
+                 (y < (height - 1)) ? raw[io + width] : 0,         // x,y+1
+                 (y > 1) ? raw[io - (2 * width)] : 0,              // x,y-2
+                 (y < (height - 2))?raw[io + (2 * width)] : 0 };   // x,y+2
 
-  vr(x,y)._a = hr(x,y)._a = (uint16_t)-1;
+    value =  ((( py[0] + raw[io] + py[1]) * 2) - py[2] - py[3]) >> 2;
+    vr[io]._g = limit(value, py[0], py[1]);
+  }
 
   ////////////////////////////////////////////////
   // (0,1) -> Blue
   x = origx;
   y = origy + 1;
+  io = x + y * width; // input offset
+  {
+    int px[] = { (x > 0) ? raw[io - 1] : 0,                // x-1,y
+                 (x < (width - 1)) ? raw[io + 1] : 0,      // x+1,y
+                 (x > 1) ? raw[io - 2] : 0,                // x-2,y
+                 (x < (width - 2)) ? raw[io + 2] : 0 };    // x+2,y
 
-  value = (((raw(x-1,y) + raw(x,y) + raw(x+1,y)) * 2) - raw(x - 2,y) - raw(x + 2,y)) >> 2;
-  hr(x,y)._g = limit(value,raw(x - 1,y),raw(x + 1,y));
+    int value =  ((( px[0] + raw[io] + px[1]) * 2) - px[2] - px[3]) >> 2;
+    hr[io]._g = limit(value, px[0], px[1]);
 
-  value = (((raw(x,y-1) + raw(x,y) + raw(x,y+1)) * 2) - raw(x,y-2) - raw(x,y+2)) >> 2;
-  vr(x,y)._g = limit(value,raw(x,y-1),raw(x,y+1));
+    int py[] = { (y > 0) ? raw[io - width] : 0,                    // x,y-1
+                 (y < (height - 1)) ? raw[io + width] : 0,         // x,y+1
+                 (y > 1) ? raw[io - (2 * width)] : 0,              // x,y-2
+                 (y < (height - 2))?raw[io + (2 * width)] : 0 };   // x,y+2
 
-  vr(x,y)._a = hr(x,y)._a = (uint16_t)-1;
-
+    value =  ((( py[0] + raw[io] + py[1]) * 2) - py[2] - py[3]) >> 2;
+    vr[io]._g = limit(value, py[0], py[1]);
+  }
   ////////////////////////////////////////////////
   // (1,1) -> Clear
   x = origx + 1;
   y = origy + 1;
+  io = x + y * width; // input offset
 
-  vr(x,y)._g = hr(x,y)._g = raw(x,y);
-  vr(x,y)._a = hr(x,y)._a = (uint16_t)-1;
+  vr[io]._g = hr[io]._g = raw[io];
+  vr[io]._a = hr[io]._a = (uint16_t)-1;
 }
 
 /*
@@ -179,106 +238,169 @@ __global__ void green_interpolate(Cuda2DRef<uint16_t> raw,
  * author daniel
  *
  */
-__global__ void blue_red_interpolate( Cuda2DRef<uint16_t> raw,
-                                      Cuda2DRef<RGBA> hr,
-                                      Cuda2DRef<RGBA> vr,
-                                      Cuda2DRef<LAB> hl,
-                                      Cuda2DRef<LAB> vl)
+__global__ void blue_red_interpolate( size_t width, size_t height,
+                                      uint16_t* raw,
+                                      RGBA* hr, RGBA* vr,
+                                      LAB* hl,LAB* vl)
 {
   int origx = ((blockIdx.x * blockDim.x) + threadIdx.x) << 1;
   int origy = ((blockIdx.y * blockDim.y) + threadIdx.y) << 1;
 
   auto limit = [](int x,int a,int b)->int
   {
-    int result = max(x,min(a,b));
-    return min(result,max(a,b));
+    if (a>b)
+      return (x<b)?b:(x>a)?a:x;
+
+    return (x<a)?a:(x>b)?b:x;
   };
+
+  auto sum = [](int arr[4])->int { return arr[0] + arr[1] + arr[2] + arr[3]; };
 
   // C R
   // B C
-
   ////////////////////////////////////////////////
   // (0,0) -> ClearRead
   int x = origx, y = origy;
+  int io = x + y * width; // input offset
 
-  // Horizontal
-  int value = hr(x,y)._g + ((raw(x-1,y) - hr(x-1,y)._g + raw(x+1,y) - hr(x+1,y)._g) >> 1);
-  hr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
+  {
+    int pp[] = { (x > 0) ? raw[io - 1] : 0,                      // x-1,y
+                 (y > 0) ? raw[io - width] : 0,                  // x,y-1
+                 (x < (width - 1)) ? raw[io + 1] : 0,            // x+1,y
+                 (y < (height - 1)) ? raw[io + width] : 0};      // x,y+1
 
-  value = hr(x,y)._g  + ((raw(x,y-1) - hr(x,y-1)._g + raw(x,y+1) - hr(x,y+1)._g) >> 1);
-  hr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
-  hl(x,y).from(hr(x,y));
+    int ph[] = { (x > 0) ? hr[io - 1]._g : 0,                    // x-1,y
+                 (y > 0) ? hr[io - width]._g : 0,                // x,y-1
+                 (x < (width - 1)) ? hr[io + 1]._g : 0,          // x+1,y
+                 (y < (height - 1)) ? hr[io + width]._g : 0};    // x,y+1
 
-  // Vertical
-  value = vr(x,y)._g + ((raw(x-1,y) - vr(x-1,y)._g + raw(x+1,y) - vr(x+1,y)._g) >> 1);
-  vr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
+    int pv[] = { (x > 0) ? vr[io - 1]._g : 0,                    // x-1,y
+                 (y > 0) ? vr[io - width]._g  : 0,               // x,y-1
+                 (x < (width - 1)) ? vr[io + 1]._g : 0,          // x+1,y
+                 (y < (height - 1)) ? vr[io + width]._g : 0};    // x,y+1
 
-  value = vr(x,y)._g + ((raw(x,y-1) - vr(x,y-1)._g + raw(x,y+1) - vr(x,y+1)._g) >> 1);
-  vr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
-  vl(x,y).from(vr(x,y));
+
+    int value = hr[io]._g + ((pp[0] - ph[0] + pp[2] - ph[2]) >> 1);
+    hr[io]._r = limit(value,0,(1<<16)-1);
+
+    value = hr[io]._g + ((pp[1] - ph[1] + pp[3] - ph[3]) >> 1);
+    hr[io]._b = limit(value,0,(1<<16)-1);
+
+    value = vr[io]._g + ((pp[0] - pv[0] + pp[2] - pv[2]) >> 1);
+    vr[io]._r = limit(value,0,(1<<16)-1);
+
+    value = vr[io]._g + ((pp[1] - pv[1] + pp[3] - pv[3]) >> 1);
+    vr[io]._b = limit(value,0,(1<<16)-1);
+
+    hl[io].from(hr[io]);
+    vl[io].from(vr[io]);
+  }
 
   ////////////////////////////////////////////////
   // (1,0) -> Red
   x = origx + 1;
   y = origy;
+  io = x + y * width; // input offset
+  {
+    hr[io]._r = vr[io]._r = raw[io];
 
-  hr(x,y)._r = vr(x,y)._r = raw(x,y);
+    int pp[] = { (x > 0 && y > 0) ? raw[io - width - 1] : 0,                            // x-1,y-1
+                 (x > 0 && y < (height - 1)) ? raw[io + width - 1] : 0,                 // x-1,y+1
+                 (x < (width - 1) && y > 0) ? raw[io - width + 1] : 0,                  // x+1,y-1
+                 (x < (width - 1) && y < (height - 1)) ? raw[io + width + 1] : 0};      // x+1,y+1
 
-  value = hr(x,y)._g + ((raw(x-1,y-1) - hr(x-1,y-1)._g +
-                         raw(x-1,y+1) - hr(x-1,y+1)._g +
-                         raw(x+1,y-1) - hr(x+1,y-1)._g +
-                         raw(x+1,y+1) - hr(x+1,y+1)._g) >> 2);
-  hr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
-  hl(x,y).from(hr(x,y));
+    int ph[] = { (x > 0 && y > 0) ? hr[io - width - 1]._g : 0,                          // x-1,y-1
+                 (x > 0 && y < (height - 1)) ? hr[io + width - 1]._g : 0,               // x-1,y+1
+                 (x < (width - 1) && y > 0) ? hr[io - width + 1]._g : 0,                // x+1,y-1
+                 (x < (width - 1) && y < (height - 1)) ? hr[io + width + 1]._g : 0};    // x+1,y+1
 
-  value = vr(x,y)._g + ((raw(x-1,y-1) - vr(x-1,y-1)._g +
-                         raw(x-1,y+1) - vr(x-1,y+1)._g +
-                         raw(x+1,y-1) - vr(x+1,y-1)._g +
-                         raw(x+1,y+1) - vr(x+1,y+1)._g) >> 2);
-  vr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
-  vl(x,y).from(vr(x,y));
+    int pv[] = { (x > 0 && y > 0) ? vr[io - width - 1]._g : 0,                          // x-1,y-1
+                 (x > 0 && y < (height - 1)) ? vr[io + width - 1]._g : 0,               // x-1,y+1
+                 (x < (width - 1) && y > 0) ? vr[io - width + 1]._g : 0,                // x+1,y-1
+                 (x < (width - 1) && y < (height - 1)) ? vr[io + width + 1]._g : 0};    // x+1,y+1
+
+    // horizontal
+    int value = hr[io]._g + ((sum(pp) - sum(ph)) >> 2);
+    hr[io]._b = limit(value,0,(1<<16)-1);
+
+    value = vr[io]._g + ((sum(pp) - sum(pv)) >> 2);
+    vr[io]._b = limit(value,0,(1<<16)-1);
+
+    hl[io].from(hr[io]);
+    vl[io].from(vr[io]);
+  }
 
   ////////////////////////////////////////////////
   // (0,1) -> Blue
   x = origx;
   y = origy + 1;
+  io = x + y * width; // input offset
+  {
+    hr[io]._b = vr[io]._b = raw[io];
 
-  hr(x,y)._b = vr(x,y)._b = raw(x,y);
+    int pp[] = { (x > 0 && y > 0) ? raw[io - width - 1] : 0,                            // x-1,y-1
+                 (x > 0 && y < (height - 1)) ? raw[io + width - 1] : 0,                 // x-1,y+1
+                 (x < (width - 1) && y > 0) ? raw[io - width + 1] : 0,                  // x+1,y-1
+                 (x < (width - 1) && y < (height - 1)) ? raw[io + width + 1] : 0};      // x+1,y+1
 
-  value = hr(x,y)._g + ((raw(x-1,y-1) - hr(x-1,y-1)._g +
-                         raw(x-1,y+1) - hr(x-1,y+1)._g +
-                         raw(x+1,y-1) - hr(x+1,y-1)._g +
-                         raw(x+1,y+1) - hr(x+1,y+1)._g) >> 2);
-  hr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
-  hl(x,y).from(hr(x,y));
+    int ph[] = { (x > 0 && y > 0) ? hr[io - width - 1]._g : 0,                          // x-1,y-1
+                 (x > 0 && y < (height - 1)) ? hr[io + width - 1]._g : 0,               // x-1,y+1
+                 (x < (width - 1) && y > 0) ? hr[io - width + 1]._g : 0,                // x+1,y-1
+                 (x < (width - 1) && y < (height - 1)) ? hr[io + width + 1]._g : 0};    // x+1,y+1
 
-  value = vr(x,y)._g + ((raw(x-1,y-1) - vr(x-1,y-1)._g +
-                         raw(x-1,y+1) - vr(x-1,y+1)._g +
-                         raw(x+1,y-1) - vr(x+1,y-1)._g +
-                         raw(x+1,y+1) - vr(x+1,y+1)._g) >> 2);
-  vr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
-  vl(x,y).from(vr(x,y));
+    int pv[] = { (x > 0 && y > 0) ? vr[io - width - 1]._g : 0,                          // x-1,y-1
+                 (x > 0 && y < (height - 1)) ? vr[io + width - 1]._g : 0,               // x-1,y+1
+                 (x < (width - 1) && y > 0) ? vr[io - width + 1]._g : 0,                // x+1,y-1
+                 (x < (width - 1) && y < (height - 1)) ? vr[io + width + 1]._g : 0};    // x+1,y+1
+
+    // horizontal
+    int value = hr[io]._g + ((sum(pp) - sum(ph)) >> 2);
+    hr[io]._r = limit(value,0,(1<<16)-1);
+
+    value = vr[io]._g + ((sum(pp) - sum(pv)) >> 2);
+    vr[io]._r = limit(value,0,(1<<16)-1);
+
+    hl[io].from(hr[io]);
+    vl[io].from(vr[io]);
+  }
 
   ////////////////////////////////////////////////
   // (1,1) -> ClearBlue
   x = origx + 1;
   y = origy + 1;
+  io = x + y * width; // input offset
 
-  // Horizontal
-  value = hr(x,y)._g + ((raw(x-1,y) - hr(x-1,y)._g + raw(x+1,y) - hr(x+1,y)._g) >> 1);
-  hr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
+  {
+    int pp[] = { (x > 0) ? raw[io - 1] : 0,                      // x-1,y
+                 (y > 0) ? raw[io - width] : 0,                  // x,y-1
+                 (x < (width - 1)) ? raw[io + 1] : 0,            // x+1,y
+                 (y < (height - 1)) ? raw[io + width] : 0};      // x,y+1
 
-  value = hr(x,y)._g + ((raw(x,y-1) - hr(x,y-1)._g + raw(x,y+1) - hr(x,y+1)._g) >> 1);
-  hr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
-  hl(x,y).from(hr(x,y));
+    int ph[] = { (x > 0) ? hr[io - 1]._g : 0,                    // x-1,y
+                 (y > 0) ? hr[io - width]._g : 0,                // x,y-1
+                 (x < (width - 1)) ? hr[io + 1]._g : 0,          // x+1,y
+                 (y < (height - 1)) ? hr[io + width]._g : 0};    // x,y+1
 
-  // Vertical
-  value = vr(x,y)._g + ((raw(x-1,y) - vr(x-1,y)._g + raw(x+1,y) - vr(x+1,y)._g) >> 1);
-  vr(x,y)._b = limit(value, 0, ((1 << 16) - 1));
+    int pv[] = { (x > 0) ? vr[io - 1]._g : 0,                    // x-1,y
+                 (y > 0) ? vr[io - width]._g  : 0,               // x,y-1
+                 (x < (width - 1)) ? vr[io + 1]._g : 0,          // x+1,y
+                 (y < (height - 1)) ? vr[io + width]._g : 0};    // x,y+1
 
-  value = vr(x,y)._g + ((raw(x,y-1) - vr(x,y-1)._g + raw(x,y+1) - vr(x,y+1)._g) >> 1);
-  vr(x,y)._r = limit(value, 0, ((1 << 16) - 1));
-  vl(x,y).from(vr(x,y));
+    int value = hr[io]._g + ((pp[0] - ph[0] + pp[2] - ph[2]) >> 1);
+    hr[io]._b = limit(value,0,(1<<16)-1);
+
+    value = hr[io]._g + ((pp[1] - ph[1] + pp[3] - ph[3]) >> 1);
+    hr[io]._r = limit(value,0,(1<<16)-1);
+
+    value = vr[io]._g + ((pp[0] - pv[0] + pp[2] - pv[2]) >> 1);
+    vr[io]._b = limit(value,0,(1<<16)-1);
+
+    value = vr[io]._g + ((pp[1] - pv[1] + pp[3] - pv[3]) >> 1);
+    vr[io]._r = limit(value,0,(1<<16)-1);
+
+    hl[io].from(hr[io]);
+    vl[io].from(vr[io]);
+  }
 }
 
 
@@ -289,71 +411,78 @@ __global__ void blue_red_interpolate( Cuda2DRef<uint16_t> raw,
  * author daniel
  *
  */
-__global__ void misguidance_color_artifacts(Cuda2DRef<RGBA> rst,
-                                            Cuda2DRef<RGBA> hr,
-                                            Cuda2DRef<RGBA> vr,
-                                            Cuda2DRef<LAB> hl,
-                                            Cuda2DRef<LAB> vl,
-                                            uint32_t* histogram, size_t histogram_size,
-                                            uint32_t* small_histogram, size_t small_histogram_size)
+__global__ void misguidance_color_artifacts(size_t width, size_t height, RGBA* rst,
+                                            RGBA* hr,RGBA* vr,
+                                            LAB* hl,LAB* vl,
+                                            uint32_t* histogram,uint32_t histogram_size,
+                                            uint32_t* small_histogram, uint32_t small_histogram_size)
 {
-  int hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(histogram_size));
-  int small_hist_size_bits = ((sizeof(unsigned int) * 8) - 1 -  __clz(small_histogram_size));
-
   int x = ((blockIdx.x * blockDim.x) + threadIdx.x);
   int y = ((blockIdx.y * blockDim.y) + threadIdx.y);
+  int io = x + y * width;
 
-  auto sqr=[](double a)->double { return a*a; };
+  auto sqr=[](int a)->int { return a*a; };
 
-  double lv[2],lh[2],cv[2],ch[2];
+  int lv[2],lh[2],cv[2],ch[2];
   int hh = 0,hv = 0;
 
-  lh[0] = fabs(hl(x,y)._L - hl(x-1,y)._L);
-  lh[1] = fabs(hl(x,y)._L - hl(x+1,y)._L);
 
-  lv[0] = fabs(vl(x,y)._L - vl(x,y-1)._L);
-  lv[1] = fabs(vl(x,y)._L - vl(x,y+1)._L);
+  LAB ph[] = { (x > 0) ? hl[io-1] : LAB(),                            // x-1,y
+               (x < (width - 1)) ? hl[io+1] : LAB()};                 // x+1,y
 
-  ch[0] = sqr(hl(x,y)._a - hl(x-1,y)._a) +
-          sqr(hl(x,y)._b - hl(x-1,y)._b);
+  LAB pv[] = { (y > 0) ? vl[io-width] : LAB(),                        // x,y-1
+               (y < (height - 1)) ? vl[io+width] : LAB()};            // x,y+1
 
-  ch[1] = sqr(hl(x,y)._a - hl(x+1,y)._a) +
-          sqr(hl(x,y)._b - hl(x+1,y)._b);
 
-  cv[0] = sqr(vl(x,y)._a - vl(x,y-1)._a) +
-          sqr(vl(x,y)._b - vl(x,y-1)._b);
+  lh[0] = __sad(hl[io]._L,ph[0]._L,0);
+  lh[1] = __sad(hl[io]._L,ph[1]._L,0);
 
-  cv[1] = sqr(vl(x,y)._a - vl(x,y+1)._a) +
-          sqr(vl(x,y)._b - vl(x,y+1)._b);
+  lv[0] = __sad(vl[io]._L,pv[0]._L,0);
+  lv[1] = __sad(vl[io]._L,pv[1]._L,0);
 
-  double eps_l = min(max(lh[0],lh[1]),max(lv[0],lv[1]));
-  double eps_c = min(max(ch[0],ch[1]),max(cv[0],cv[1]));
+  ch[0] = sqr(hl[io]._a - ph[0]._a) +
+          sqr(hl[io]._b - ph[0]._b);
 
-  for (size_t index = 0; index < 2; index++)
-  {
-    if ((lh[index] <= eps_l) && (ch[index] <= eps_c))
-      hh++;
+  ch[1] = sqr(hl[io]._a - ph[1]._a) +
+          sqr(hl[io]._b - ph[1]._b);
 
-    if ((lv[index] <= eps_l) && (cv[index] <= eps_c))
-      hv++;
-  }
+  cv[0] = sqr(vl[io]._a - pv[0]._a) +
+          sqr(vl[io]._b - pv[0]._b);
+
+  cv[1] = sqr(vl[io]._a - pv[1]._a) +
+          sqr(vl[io]._b - pv[1]._b);
+
+
+  int h = (lh[0]>lh[1]) ? lh[0]: lh[1];
+  int v = (lv[0]>lv[1]) ? lv[0]: lv[1];
+  int eps_l = v < h ? v : h;
+
+  h = (ch[0]>ch[1])?ch[0]:ch[1];
+  v = (cv[0]>cv[1])?cv[0]:cv[1];
+  int eps_c = v < h ? v : h;
+
+  hh = ((lh[0]<=eps_l) * (ch[0]<= eps_c)) +
+       ((lh[1]<=eps_l) * (ch[1]<= eps_c));
+
+  hv = ((lv[0]<=eps_l) * (cv[0]<= eps_c)) +
+       ((lv[1]<=eps_l) * (cv[1]<= eps_c));
 
   uint32_t r = 0,g = 0,b = 0;
   RGBA *lf, *rt;
 
-  lf = (hh > hv)? &hr(x,y) : &vr(x,y);
-  rt = (hv > hh)? &vr(x,y) : &hr(x,y);
+  lf = (hh > hv)? &hr[io] : &vr[io];
+  rt = (hv > hh)? &vr[io] : &hr[io];
 
-  r = rst(x,y)._r = (lf->_r + rt->_r) >> 1;
-  g = rst(x,y)._g = (lf->_g + rt->_g) >> 1;
-  b = rst(x,y)._b = (lf->_b + rt->_b) >> 1;
-  rst(x,y)._a = (uint16_t)-1;
+  r = rst[io]._r = (lf->_r + rt->_r) >> 1;
+  g = rst[io]._g = (lf->_g + rt->_g) >> 1;
+  b = rst[io]._b = (lf->_b + rt->_b) >> 1;
+  rst[io]._a = (uint16_t)-1;
 
-  uint32_t brightness = ((r+r+r+b+g+g+g+g) >> 3) * small_histogram_size >> small_hist_size_bits;
-  atomicAdd(&small_histogram[brightness & ((1 << small_hist_size_bits) - 1)], 1);
+  uint32_t brightness = ((r+r+r+b+g+g+g+g) >> 3) * small_histogram_size >> 16;
+  atomicAdd(&small_histogram[brightness % small_histogram_size], 1);
 
-  brightness = ((r+r+r+b+g+g+g+g) >> 3) * histogram_size >> hist_size_bits;
-  atomicAdd(&histogram[brightness & ((1 << hist_size_bits) - 1)], 1);
+  brightness = ((r+r+r+b+g+g+g+g) >> 3) * histogram_size >> 16;
+  atomicAdd(&histogram[brightness & ((1 << 16) - 1)], 1);
 }
 
 
@@ -364,7 +493,7 @@ __global__ void misguidance_color_artifacts(Cuda2DRef<RGBA> rst,
  * author: daniel
  *
  */
-__global__ void cudaMax(uint32_t *org, uint32_t *max)
+__global__ void cudaMax(uint32_t* org,uint32_t* max)
 {
   const int tid = threadIdx.x + blockIdx.x * blockDim.x;
   max[tid] = org[tid];
@@ -426,14 +555,14 @@ Debayer::~Debayer()
  */
 void Debayer_impl::init(size_t width,size_t height,size_t small_hits_size)
 {
-  _raw = Cuda2DPtr<uint16_t>(width,height,2,2);  _raw.fill(0);
+  _raw = Cuda2DMem<uint16_t>(width,height);  _raw.fill(0);
 
-  _horiz = Cuda2DPtr<RGBA>(width,height,2,2); _horiz.fill(0);
-  _vert = Cuda2DPtr<RGBA>(width,height,2,2); _vert.fill(0);
-  _result = Cuda2DPtr<RGBA>(width,height); _result.fill(0);
+  _horiz = Cuda2DMem<RGBA>(width,height); _horiz.fill(0);
+  _vert = Cuda2DMem<RGBA>(width,height); _vert.fill(0);
+  _result = Cuda2DMem<RGBA>(width,height); _result.fill(0);
 
-  _hlab = Cuda2DPtr<LAB>(width,height,2,2); _hlab.fill(0);
-  _vlab = Cuda2DPtr<LAB>(width,height,2,2); _vlab.fill(0);
+  _hlab = Cuda2DMem<LAB>(width,height); _hlab.fill(0);
+  _vlab = Cuda2DMem<LAB>(width,height); _vlab.fill(0);
 
   _histogram = CudaPtr<uint32_t>(1 << 16); _histogram.fill(0);
   _histogram_max = CudaPtr<uint32_t>(1 << 16); _histogram_max.fill(0);
@@ -483,23 +612,22 @@ image::RawRGBPtr Debayer_impl::ahd(image::RawRGBPtr img)
   if (!img)
     return image::RawRGBPtr();
 
-  _raw.put((uint16_t*)img->bytes());
+  _histogram_max.fill(0);
+  _small_histogram.fill(0);
+  _raw.put((uint16_t*)img->bytes(),img->width() * img->height());
+
+  cudaProfilerStart();
 
   dim3 threads(_thx >> 1,_thy >> 1);
   dim3 blocks(_blkx, _blky);
 
-  green_interpolate<<<blocks,threads>>>(_raw.ref(), _horiz.ref(), _vert.ref());
-  blue_red_interpolate<<<blocks,threads>>>(_raw.ref(), _horiz.ref(), _vert.ref(), _hlab.ref(), _vlab.ref());
-
-
-  _histogram_max.fill(0);
-  _small_histogram.fill(0);
+  green_interpolate<<<blocks,threads>>>(img->width(), img->height(),_raw.ptr(), _horiz.ptr(), _vert.ptr());
+  blue_red_interpolate<<<blocks,threads>>>(img->width(), img->height(),_raw.ptr(), _horiz.ptr(), _vert.ptr(), _hlab.ptr(), _vlab.ptr());
 
   dim3 threads2(_thx,_thy);
-  misguidance_color_artifacts<<<blocks,threads2>>>(_result.ref(), _horiz.ref(),
-                      _vert.ref(), _hlab.ref(), _vlab.ref(),
-                      _histogram.ptr(), _histogram.size(),
-                      _small_histogram.ptr(), _small_histogram.size());
+  misguidance_color_artifacts<<<blocks,threads2>>>(img->width(), img->height(),
+                      _result.ptr(), _horiz.ptr(),
+                      _vert.ptr(), _hlab.ptr(), _vlab.ptr(),_histogram.ptr(), _histogram.size(),_small_histogram.ptr(), _small_histogram.size());
 
   int thx = 64;
   while (_histogram.size() < thx)
@@ -507,15 +635,17 @@ image::RawRGBPtr Debayer_impl::ahd(image::RawRGBPtr img)
 
   cudaMax<<<_histogram.size() / thx, thx>>>(_histogram.ptr(), _histogram_max.ptr());
 
+  cudaProfilerStop();
+
   image::RawRGBPtr result(new image::RawRGB(img->width(), img->height(), img->depth(), image::eRGBA));
-  _result.get((RGBA*)result->bytes());
+  _result.get((RGBA*)result->bytes(), result->width() * result->height());
 
   image::HistPtr  full_hist(new image::Histogram);
   full_hist->_histogram.resize(_histogram.size());
   full_hist->_small_hist.resize(_small_histogram.size());
 
-  _histogram.get(full_hist->_histogram.data(), full_hist->_histogram.size());
-  _small_histogram.get(full_hist->_small_hist.data(), full_hist->_small_hist.size());
+  _histogram.get((uint32_t*)full_hist->_histogram.data(), _histogram.size());
+  _small_histogram.get(full_hist->_small_hist.data(), _small_histogram.size());
   _histogram_max.get(&full_hist->_max_value, 1);
 
   result->set_histogram(full_hist);

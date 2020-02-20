@@ -192,7 +192,7 @@ X11Display Utils::aquire_display(const char* extra_string)
   else
   {
     std::string line;
-    size_t id;
+    size_t id = 1;
 
     do
     {

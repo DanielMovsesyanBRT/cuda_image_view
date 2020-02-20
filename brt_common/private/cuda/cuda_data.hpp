@@ -38,7 +38,9 @@ public:
           void                    memset(int value);
           size_t                  size() const { return (!_valid)? 0 : _size; }
           bool                    valid() const { return _valid; }
+
           void*                   ptr() { return _data; }
+          __device__ void*        d_ptr() { return _data; }
 
           void                    from_host(const void* data,size_t size);
           void                    to_host(void* data,size_t size);

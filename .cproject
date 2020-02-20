@@ -46,6 +46,10 @@
 							</tool>
 						</toolChain>
 					</folderInfo>
+					<fileInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973.986391286" name="debayer.cu" rcbsApplicability="disable" resourcePath="cuda/debayer.cu" toolsToInvoke="nvcc.compiler.406025928.1140331336">
+						<tool id="nvcc.compiler.406025928.1140331336" name="NVCC Compiler" superClass="nvcc.compiler.406025928"/>
+					</fileInfo>
+					<fileInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973.487320388" name="debayer.hpp" rcbsApplicability="disable" resourcePath="cuda/debayer.hpp" toolsToInvoke=""/>
 					<fileInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973.823353005" name="image_list_window.hpp" rcbsApplicability="disable" resourcePath="window/image_list_window.hpp" toolsToInvoke=""/>
 					<fileInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1118981973.1714610390" name="camera_window.hpp" rcbsApplicability="disable" resourcePath="window/camera_window.hpp" toolsToInvoke=""/>
 					<sourceEntries>
