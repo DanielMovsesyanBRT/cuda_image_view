@@ -86,7 +86,7 @@ void MetaImpl::add(const MetaImpl* params)
  */
 void MetaImpl::parse(int argc,char** argv,const char* default_arg_name)
 {
-  for (int index = 1; index < argc; index++)
+  for (static int index = 1; index < argc; index++)
   {
     if (strstr(argv[index],"--") == argv[index])
     {

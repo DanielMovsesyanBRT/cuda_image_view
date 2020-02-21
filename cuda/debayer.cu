@@ -16,9 +16,6 @@ namespace brt
 namespace jupiter
 {
 
-__constant__ double             _Xn = (0.950456);
-__constant__ double             _Zn = (1.088754);
-
 /*
  * \\class name
  *
@@ -33,48 +30,6 @@ struct RGBA
   uint16_t                        _a;
 };
 
-
-/*
- * \\struct LAB
- *
- * created on: Feb 14, 2020
- *
- */
-/*
-struct LAB
-{
-  double                          _L;
-  double                          _a;
-  double                          _b;
-
-  __device__ void                 from(RGBA& rgba)
-  {
-    double X,Y,Z;
-
-    // Matrix multiplication
-    X = (0.412453 * rgba._r  +
-         0.357580 * rgba._g  +
-         0.180423 * rgba._b) / _Xn;
-
-    Y = (0.212671 * rgba._r +
-         0.715160 * rgba._g +
-         0.072169 * rgba._b);
-
-    Z = (0.019334 * rgba._r +
-         0.119193 * rgba._g +
-         0.950227 * rgba._b) / _Zn;
-
-    auto adjust = [](double value)->double
-    {
-      return (value > 0.00856) ? cbrt(value) : (7.787 * value + 0.1379310);
-    };
-
-    _L = (Y > 0.00856) ? (116.0 * cbrt(Y) - 16.0) : 903.3 * Y;
-    _a = 500.0 * (adjust(X) - adjust(Y));
-    _b = 200.0 * (adjust(Y) - adjust(Z));
-  }
-};
-*/
 
 struct LAB
 {
@@ -225,19 +180,109 @@ __global__ void green_interpolate(size_t width, size_t height,
  */
 __global__ void blue_red_interpolate( size_t width, size_t height,
                                       uint16_t* raw,
-                                      RGBA* hr, RGBA* vr,
-                                      LAB* hl,LAB* vl)
+                                      RGBA* ip0,RGBA* ip1,
+                                      LAB* lb0,LAB* lb1)
+//                                      RGBA* hr, RGBA* vr,
+//                                      LAB* hl,LAB* vl)
 {
   int origx = ((blockIdx.x * blockDim.x) + threadIdx.x) << 1;
   int origy = ((blockIdx.y * blockDim.y) + threadIdx.y) << 1;
+  int z = blockIdx.z;
+
+  RGBA* ip[2] = {ip0, ip1};
+  LAB*  lb[2] = {lb0, lb1};
 
   auto limit = [](int x,int a,int b)->int
   {
     return (x<a)?a:(x>b)?b:x;
   };
 
-  auto sum = [](int arr[4])->int { return arr[0] + arr[1] + arr[2] + arr[3]; };
+  int sub[4][4] = { {0,0,0,0}, {0,0,0,0}, {0,0,0,0}, {0,0,0,0} };
 
+  int io = origx + origy * width;
+
+
+  if (origx > 0)
+  {
+    if (origy > 0)
+      sub[0][0] = raw[io-width-1] - ip[z][io-width-1]._g;
+
+    sub[1][0] = raw[io-1] - ip[z][io-1]._g;
+    sub[2][0] = raw[io+width-1] - ip[z][io+width-1]._g;
+
+    if (origy < (height - 2))
+      sub[3][0] = raw[io+2*width-1] - ip[z][io+2*width-1]._g;
+  }
+
+  if (origx < (width - 2))
+  {
+    if (origy > 0)
+      sub[0][3] = raw[io-width+2] - ip[z][io-width+2]._g;
+
+    sub[1][3] = raw[io+2] - ip[z][io+2]._g;
+    sub[2][3] = raw[io+width+2] - ip[z][io+width+2]._g;
+
+    if (origy < (height - 2))
+      sub[3][3] = raw[io+2*width+2] - ip[z][io+2*width+2]._g;
+  }
+
+  if (origy > 0)
+  {
+    sub[0][1] = raw[io-width] - ip[z][io-width]._g;
+    sub[0][2] = raw[io-width+1] - ip[z][io-width+1]._g;
+  }
+
+  if (origy < (height - 2))
+  {
+    sub[3][1] = raw[io+2*width] - ip[z][io+2*width]._g;
+    sub[3][2] = raw[io+2*width+1] - ip[z][io+2*width+1]._g;
+  }
+
+  sub[1][1] = raw[io] - ip[z][io]._g;
+  sub[1][2] = raw[io+1] - ip[z][io+1]._g;
+  sub[2][1] = raw[io+width] - ip[z][io+width]._g;
+  sub[2][2] = raw[io+width+1] - ip[z][io+width+1]._g;
+
+  // C R
+  // B C
+  ////////////////////////////////////////////////
+  // (0,0) -> ClearRead
+  {
+    ip[z][io]._r = limit(ip[z][io]._g + ((sub[1][0] + sub[1][2]) >> 1),0,(1<<16)-1);
+    ip[z][io]._b = limit(ip[z][io]._g + ((sub[0][1] + sub[2][1]) >> 1),0,(1<<16)-1);
+
+    lb[z][io].from(ip[z][io]);
+  }
+
+  ////////////////////////////////////////////////
+  // (1,0) -> Red
+  {
+    ip[z][io+1]._r = raw[io+1];
+    ip[z][io+1]._b = limit(ip[z][io+1]._g + ((sub[0][1] + sub[0][3] + sub[2][1] + sub[2][3]) >> 2),0,(1<<16)-1);
+
+    lb[z][io+1].from(ip[z][io+1]);
+  }
+
+  ////////////////////////////////////////////////
+  // (0,1) -> Blue
+  {
+    ip[z][io+width]._b = raw[io+width];
+
+    ip[z][io+width]._r = limit(ip[z][io+width]._g + ((sub[1][0] + sub[1][2] + sub[3][0] + sub[3][2]) >> 2),0,(1<<16)-1);
+    lb[z][io+width].from(ip[z][io+width]);
+  }
+
+  ////////////////////////////////////////////////
+  // (1,1) -> ClearBlue
+  {
+    ip[z][io+width+1]._b = limit(ip[z][io+width+1]._g + ((sub[2][1] + sub[2][3]) >> 1),0,(1<<16)-1);
+    ip[z][io+width+1]._r = limit(ip[z][io+width+1]._g + ((sub[1][2] + sub[3][2]) >> 1),0,(1<<16)-1);
+
+    lb[z][io+width+1].from(ip[z][io+width+1]);
+  }
+
+
+#if 0
   int h_sub[4][4] = { {0,0,0,0}, {0,0,0,0}, {0,0,0,0}, {0,0,0,0} };
   int v_sub[4][4] = { {0,0,0,0}, {0,0,0,0}, {0,0,0,0}, {0,0,0,0} };
 
@@ -367,153 +412,6 @@ __global__ void blue_red_interpolate( size_t width, size_t height,
 
     hl[io+width+1].from(hr[io+width+1]);
     vl[io+width+1].from(vr[io+width+1]);
-  }
-
-#if 0
-  // C R
-  // B C
-  ////////////////////////////////////////////////
-  // (0,0) -> ClearRead
-  int x = origx, y = origy;
-  int io = x + y * width; // input offset
-
-  {
-    hr[io]._r = limit(hr[io]._g+(( ((x>0)?raw[io-1]:0) - ((x>0)?hr[io-1]._g:0) +            // x-1,y
-                                    raw[io+1] - hr[io+1]._g) >> 1),                         // x+1,y
-                                    0,(1<<16)-1);
-
-    hr[io]._b = limit(hr[io]._g+(( ((y>0)?raw[io-width]:0) - ((y>0)?hr[io-width]._g:0) +    // x,y-1
-                                    raw[io+width] - hr[io+width]._g) >> 1),                 // x,y+1
-                                    0,(1<<16)-1);
-
-    vr[io]._r = limit(vr[io]._g+(( ((x>0)?raw[io-1]:0) - ((x>0)?vr[io-1]._g:0) +            // x-1,y
-                                    raw[io+1] - vr[io+1]._g) >> 1),                         // x+1,y
-                                    0,(1<<16)-1);
-
-    vr[io]._b = limit(vr[io]._g+(( ((y>0)?raw[io-width]:0) - ((y>0)?vr[io-width]._g:0) +    // x,y-1
-                                    raw[io+width] - vr[io+width]._g) >> 1),                 // x,y+1
-                                    0,(1<<16)-1);
-
-    hl[io].from(hr[io]);
-    vl[io].from(vr[io]);
-  }
-
-  ////////////////////////////////////////////////
-  // (1,0) -> Red
-  x = origx + 1;
-  y = origy;
-  io = x + y * width; // input offset
-  {
-    hr[io]._r = vr[io]._r = raw[io];
-
-    hr[io]._b = limit(hr[io]._g+((
-                                  ((y>0)?raw[io-width-1]:0) -
-                                      ((y>0)?hr[io-width-1]._g:0) +                       // x-1,y-1
-
-                                  raw[io+width-1] - hr[io+width-1]._g +                   // x-1,y+1
-
-                                  (((x<(width-1))&&(y>0))?raw[io-width+1]:0) -
-                                      (((x<(width-1))&&(y>0))?hr[io-width+1]._g:0) +      // x+1,y-1
-
-                                  ((x<(width-1))?raw[io+width+1]:0) -
-                                      ((x<(width-1))?hr[io+width+1]._g:0)                 // x+1,y+1
-                                )>> 2),
-                                0,(1<<16)-1);
-
-    vr[io]._b = limit(vr[io]._g+((
-                                  ((y>0)?raw[io-width-1]:0) -
-                                      ((y>0)?vr[io-width-1]._g:0) +                       // x-1,y-1
-
-                                  raw[io+width-1] - vr[io+width-1]._g +                   // x-1,y+1
-
-                                  (((x<(width-1))&&(y>0))?raw[io-width+1]:0) -
-                                      (((x<(width-1))&&(y>0))?vr[io-width+1]._g:0) +      // x+1,y-1
-
-                                  ((x<(width-1))?raw[io+width+1]:0) -
-                                      ((x<(width-1))?vr[io+width+1]._g:0)                 // x+1,y+1
-                                )>> 2),
-                                0,(1<<16)-1);
-
-    hl[io].from(hr[io]);
-    vl[io].from(vr[io]);
-  }
-
-  ////////////////////////////////////////////////
-  // (0,1) -> Blue
-  x = origx;
-  y = origy + 1;
-  io = x + y * width; // input offset
-  {
-    hr[io]._b = vr[io]._b = raw[io];
-
-    hr[io]._r = limit(hr[io]._g+((
-                                  ((x>0)?raw[io-width-1]:0) -
-                                      ((x>0)?hr[io-width-1]._g:0) +                       // x-1,y-1
-
-                                  (((x>0)&&(y<(height-1)))?raw[io+width-1]:0) -
-                                      (((x>0)&&(y<(height-1)))?hr[io+width-1]._g:0) +     // x-1,y+1
-
-                                  raw[io-width+1] - hr[io-width+1]._g +                   // x+1,y-1
-
-                                  ((y<(height-1))?raw[io+width+1]:0) -
-                                      ((y<(height-1))?hr[io+width+1]._g:0)                // x+1,y+1
-                                )>> 2),
-                                0,(1<<16)-1);
-
-    vr[io]._r = limit(vr[io]._g+((
-                                  ((x>0)?raw[io-width-1]:0) -
-                                      ((x>0)?vr[io-width-1]._g:0) +                       // x-1,y-1
-
-                                  (((x>0)&&(y<(height-1)))?raw[io+width-1]:0) -
-                                      (((x>0)&&(y<(height-1)))?vr[io+width-1]._g:0) +     // x-1,y+1
-
-                                  raw[io-width+1] - vr[io-width+1]._g +                   // x+1,y-1
-
-                                  ((y<(height-1))?raw[io+width+1]:0) -
-                                      ((y<(height-1))?vr[io+width+1]._g:0)                // x+1,y+1
-                                )>> 2),
-                                0,(1<<16)-1);
-
-    hl[io].from(hr[io]);
-    vl[io].from(vr[io]);
-  }
-
-  ////////////////////////////////////////////////
-  // (1,1) -> ClearBlue
-  x = origx + 1;
-  y = origy + 1;
-  io = x + y * width; // input offset
-
-  {
-    hr[io]._b = limit(hr[io]._g+(( raw[io-1] - hr[io-1]._g +                              // x-1,y
-
-                                   ((x<(width-1))?raw[io+1]:0) -
-                                       ((x<(width-1))?hr[io+1]._g:0)) >> 1),              // x+1,y
-                                    0,(1<<16)-1);
-
-
-    hr[io]._r = limit(hr[io]._g+(( raw[io-width] - hr[io-width]._g +                      // x,y-1
-
-                                   ((y<(height-1))?raw[io+width]:0) -
-                                       ((y<(height-1))?hr[io+width]._g:0)) >> 1),         // x,y+1
-                                    0,(1<<16)-1);
-
-
-    vr[io]._b = limit(vr[io]._g+(( raw[io-1] - vr[io-1]._g +                              // x-1,y
-
-                                   ((x<(width-1))?raw[io+1]:0) -
-                                       ((x<(width-1))?vr[io+1]._g:0)) >> 1),              // x+1,y
-                                    0,(1<<16)-1);
-
-
-    vr[io]._r = limit(vr[io]._g+(( raw[io-width] - vr[io-width]._g +                      // x,y-1
-
-                                   ((y<(height-1))?raw[io+width]:0) -
-                                       ((y<(height-1))?vr[io+width]._g:0)) >> 1),         // x,y+1
-                                    0,(1<<16)-1);
-
-    hl[io].from(hr[io]);
-    vl[io].from(vr[io]);
   }
 #endif
 }
@@ -735,9 +633,10 @@ image::RawRGBPtr Debayer_impl::ahd(image::RawRGBPtr img)
 
   dim3 threads(_thx >> 1,_thy >> 1);
   dim3 blocks(_blkx, _blky);
+  dim3 blocks2(_blkx, _blky, 2);
 
   green_interpolate<<<blocks,threads>>>(img->width(), img->height(),_raw.ptr(), _horiz.ptr(), _vert.ptr());
-  blue_red_interpolate<<<blocks,threads>>>(img->width(), img->height(),_raw.ptr(), _horiz.ptr(), _vert.ptr(), _hlab.ptr(), _vlab.ptr());
+  blue_red_interpolate<<<blocks2,threads>>>(img->width(), img->height(),_raw.ptr(), _horiz.ptr(), _vert.ptr(), _hlab.ptr(), _vlab.ptr());
 
   dim3 threads2(_thx,_thy);
   misguidance_color_artifacts<<<blocks,threads2>>>(img->width(), img->height(),

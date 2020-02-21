@@ -88,6 +88,8 @@ public:
       (*_meta_data)[key].set<T>(value);
   }
 
+//  #pragma GCC push_options
+//#pragma GCC optimize ("O0")
   /*
    * \\fn Metadata& add
    *
@@ -95,8 +97,9 @@ public:
    * author: daniel
    *
    */
+
   template<typename T>
-  void                      add(const char* key,T value)
+  void                    add(const char* key,T value)
   {
     if (_meta_data != nullptr)
     {

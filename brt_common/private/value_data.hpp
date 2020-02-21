@@ -105,7 +105,10 @@ public:
 
 
           template<typename T>    struct default_arg { static size_t get() { return sizeof(T); } };
-          template<typename T>    ValueData& set(T value,size_t size = default_arg<T>::get()) { return *this; }
+          template<typename T>    ValueData& __attribute__((optimize("O0"))) set(T value,size_t size = default_arg<T>::get())
+          {
+            return *this;
+          }
 
           bool                    get_bool() const;
           int                     get_int() const;
